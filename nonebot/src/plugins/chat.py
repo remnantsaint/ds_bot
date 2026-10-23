@@ -90,6 +90,12 @@ async def _resolve_mention_names(bot: Bot, event: GroupMessageEvent, names: dict
 def _context(group_id: int, bot_id: int, current: dict) -> dict:
     # 排队期间可能又收到消息，只取当前提问之前的本群记录。
     # assistant 的 sequence 对应它回答的问题，而非回答发送的时间。
+    current = dict(current)
+    budget = int(reply_config.get("max_context_chars", 16000))
+    # 身份及提及信息同样计入预算；过大的请求明确拒绝，不静默改变对象。
+    current_size = len(json.dumps(current, ensure_ascii=False))
+    if current_size > budget:
+        raise ValueError("当前请求超过上下文预算，请缩短消息或减少提及成员")
     history = [
         dict(item) for item in sessions[group_id]
         if item["sequence"] < current["sequence"]
@@ -121,6 +127,9 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         for seg in event.message)
     if event.user_id == event.self_id:
         return
+    record = _record_group_message(event)
+    if record is None:
+        return
     if explicitly_at and reply_config.get("reply_on_at", True):
         now = time.monotonic()
         cooldown = float(reply_config.get("user_cooldown_seconds", 3))
@@ -130,18 +139,19 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         # 清理过期记录，避免按用户永久增长。
         for stale in [k for k, timestamp in user_request_times.items() if now - timestamp >= cooldown]:
             user_request_times.pop(stale, None)
-        user_request_times[key] = now
     if pending_requests[group_id] >= int(reply_config.get("max_pending_per_group", 5)):
-        if event.is_tome():
+        if explicitly_at:
             try:
                 await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
                     + MessageSegment.text("当前提问较多，请稍后再试。")), timeout=10)
             except Exception:
                 logger.warning("[chat] 排队已满提示发送失败")
         return
+    if explicitly_at and reply_config.get("reply_on_at", True):
+        user_request_times[key] = now
     pending_requests[group_id] += 1
     try:
-        await asyncio.wait_for(_handle_group_message(bot, event),
+        await asyncio.wait_for(_handle_group_message(bot, event, record),
             timeout=float(reply_config.get("request_timeout_seconds", 180)))
     except asyncio.TimeoutError:
         logger.warning(f"[chat] 群 {group_id} 请求总超时，已释放队列")
@@ -157,7 +167,7 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
             pending_requests.pop(group_id, None)
 
 
-async def _handle_group_message(bot: Bot, event: GroupMessageEvent):
+def _record_group_message(event: GroupMessageEvent):
     if event.user_id == event.self_id:
         return
 
@@ -190,6 +200,12 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent):
         "reply_to_message_id": getattr(quoted, "message_id", None),
     }
     sessions[group_id].append(current)
+    return text, names, is_at_bot, current
+
+
+async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
+    text, names, is_at_bot, current = record
+    group_id = event.group_id
 
     at_trigger = is_at_bot and reply_config.get("reply_on_at", True)
     lock = group_locks[group_id]

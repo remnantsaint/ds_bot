@@ -30,6 +30,52 @@ def event(message_id, text="问题", *, group_id=1001, user_id=2, at=True,
 
 
 class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_queue_keeps_background_and_does_not_start_cooldown(self):
+        chat.pending_requests[1001] = 5
+        try:
+            with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}):
+                await chat.handle_group_message(self.bot, event(801, "背景", at=False))
+                await chat.handle_group_message(self.bot, event(802))
+            self.assertEqual(len(chat.sessions[1001]), 2)
+            self.assertNotIn((1001, 2), chat.user_request_times)
+        finally:
+            chat.pending_requests.clear()
+
+    def test_current_metadata_cannot_exceed_budget(self):
+        with patch.dict(chat.reply_config, {"max_context_chars": 100}):
+            with self.assertRaises(ValueError):
+                chat._context(1001, 1, {"sequence": 1, "nickname": "x" * 200})
+
+    async def test_cooldown_does_not_block_another_user(self):
+        with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}), \
+             patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:
+            await chat.handle_group_message(self.bot, event(803, user_id=2))
+            await chat.handle_group_message(self.bot, event(804, user_id=3))
+            self.assertEqual(model.await_count, 2)
+
+    async def test_cross_group_slot_is_released_on_cancellation(self):
+        entered = asyncio.Event()
+        async def slow(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        with patch.object(chat, "model_slots", asyncio.Semaphore(1)), \
+             patch.object(chat.deepseek_client, "chat", side_effect=slow) as model:
+            first = self.start(event(805, group_id=1001))
+            await asyncio.wait_for(entered.wait(), 1)
+            second = self.start(event(806, group_id=1002))
+            await asyncio.sleep(0.02)
+            self.assertEqual(model.await_count, 1)
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+            for _ in range(20):
+                if model.await_count == 2:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(model.await_count, 2)
+            second.cancel()
+            await asyncio.gather(second, return_exceptions=True)
+            self.assertFalse(chat.pending_requests)
+
     async def test_user_cooldown_blocks_repeated_request(self):
         chat.user_request_times.clear()
         try:

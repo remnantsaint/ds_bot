@@ -19,8 +19,8 @@ class ConnectionHealthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_alerts_only_on_state_change(self):
         logger = Mock()
-        with patch("src.connection_health.qq_online", new_callable=AsyncMock, side_effect=[False, False, True]), \
-             patch("src.connection_health.asyncio.sleep", new_callable=AsyncMock, side_effect=[None, None, asyncio.CancelledError]):
+        with patch("src.connection_health.connection_state", new_callable=AsyncMock, side_effect=["disconnected", "disconnected", "online"]), \
+             patch("src.connection_health.asyncio.sleep", new_callable=AsyncMock, side_effect=[None, None, None, asyncio.CancelledError]):
             with self.assertRaises(asyncio.CancelledError):
                 await watch_connections(lambda: {}, logger)
         logger.warning.assert_called_once()
