@@ -15,6 +15,8 @@ from src.admin import install_admin
 install_admin(app)
 connection_watch = None
 memory_watch = None
+from src.message_recovery import connected
+nonebot.get_driver().on_bot_connect(connected)
 
 
 @nonebot.get_driver().on_startup
@@ -27,6 +29,8 @@ async def start_connection_watch():
 
 @nonebot.get_driver().on_shutdown
 async def stop_connection_watch():
+    from src.message_recovery import stop
+    await stop()
     if memory_watch is not None:
         memory_watch.cancel()
         with suppress(asyncio.CancelledError):

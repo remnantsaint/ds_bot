@@ -105,7 +105,7 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins import chat
         from test_chat import GroupQueueTests,event
         self.chat=chat;self.event=event;GroupQueueTests.reset()
-        self.policy=patch.dict(chat.reply_config,{'planner_enabled':True,'cooldown_seconds':0,'user_cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
+        self.policy=patch.dict(chat.reply_config,{'planner_enabled':True,'planner_filter_enabled':True,'planner_interval_seconds':30,'cooldown_seconds':0,'user_cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
         self.policy.start();self.bot=SimpleNamespace(send=AsyncMock(return_value={'message_id':900}))
     async def asyncTearDown(self):self.policy.stop()
 
@@ -148,3 +148,9 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload['conversation'])
             self.assertTrue(all(row['group_id']==1001 for row in payload['conversation']))
             self.bot.send.assert_awaited_once()
+
+    async def test_disabled_filter_sends_short_message_to_planner(self):
+        plan=ReplyPlan(should_reply=False,needs_memory=False)
+        with patch.dict(self.chat.reply_config,{'planner_filter_enabled':False}),patch.object(self.chat,'decide',new_callable=AsyncMock,return_value=(plan,{},{})) as planner:
+            await self.chat.handle_group_message(self.bot,self.event(1,'可恶啊',at=False))
+            planner.assert_awaited_once()

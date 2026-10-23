@@ -58,3 +58,5 @@ docker compose exec -T -e MEMORY_ENABLED=false nonebot python -m unittest discov
 人工修订不改原文；停用仅从事实列表和模型事实检索移除，原文和旧摘要仍保留。信息性质与人物QQ不开放手改，误归属条目可停用。当前只保存该事实最近一次管理决定，不是完整审核历史。
 
 回复设置新增“启用精简接话与记忆判断”开关及判断间隔、近期条数、当前消息字符量、内容Token预算、超时。保存后即时生效。普通消息依旧受自动回复冷却控制；若要更频繁接话，可调整该冷却，但会增加API用量。
+
+更新前先在Compose环境执行 `docker compose exec -T nonebot python -m src.update_tool`，待其提示Ready to restart后再重启应用容器，NapCat保持运行。更新间隙消息会先保存并在重连后尝试恢复；重复消息按QQ消息编号去重。详见MEMORY.md中的恢复范围和发送不确定状态。

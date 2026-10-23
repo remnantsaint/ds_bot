@@ -5,7 +5,7 @@ services:
       context: ./nonebot
     init: true
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 210s
     env_file:
       - ./nonebot/.env
     environment:

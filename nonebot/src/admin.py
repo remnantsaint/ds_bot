@@ -164,7 +164,7 @@ def install_admin(app, root=None, password=None):
         # 只开放可即时生效的数字参数；不修改全局并发对象或历史容器大小。
         allowed = {"cooldown_seconds", "user_cooldown_seconds", "delay_min_seconds",
                    "delay_max_seconds", "max_pending_per_group", "request_timeout_seconds",
-                   "planner_enabled","planner_interval_seconds","planner_recent_records","planner_message_chars",
+                   "planner_enabled","planner_filter_enabled","planner_interval_seconds","planner_recent_records","planner_message_chars",
                    "planner_input_tokens","planner_timeout_seconds"}
         if not data or set(data) - allowed:
             raise HTTPException(422, "不支持的参数")
@@ -273,3 +273,26 @@ def install_admin(app, root=None, password=None):
         except ValueError as error:
             raise HTTPException(422,str(error)) from None
         return {'ok':True,'message':'事实已停用' if data.action=='delete' else '事实已人工修订；来源原文保留'}
+
+
+    @app.post('/admin/api/maintenance',include_in_schema=False)
+    async def maintenance(data: dict, request: Request):
+        auth(request)
+        from src import message_recovery as recovery
+        from src.plugins import chat
+        if type(data.get('enabled')) is not bool:
+            raise HTTPException(422,'enabled需要布尔值')
+        recovery.maintenance=data['enabled']
+        if not recovery.maintenance:
+            for bot in nonebot.get_bots().values():await recovery.connected(bot)
+        return {'maintenance':recovery.maintenance,'pending':sum(chat.pending_requests.values()),
+                'inbox':recovery.get_inbox().status() if recovery.get_inbox() else {}}
+
+
+    @app.get('/admin/api/recovery',include_in_schema=False)
+    async def recovery_state(request: Request):
+        auth(request)
+        from src import message_recovery as recovery
+        store=recovery.get_inbox()
+        return {'maintenance':recovery.maintenance,'recovering':list(recovery.recovering),
+                'inbox':store.status() if store else {}}

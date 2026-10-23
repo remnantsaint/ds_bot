@@ -122,3 +122,18 @@ class AdminTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(saved.status_code,200)
                 self.assertEqual(store.list_facts(1,100)[0]['content'],'聚餐周日')
         finally:store.db.close()
+
+    async def test_maintenance_requires_auth_and_can_resume(self):
+        from src import message_recovery as recovery
+        try:
+            headers={'X-Admin-Request':'1'}
+            denied=await self.client.post('/admin/api/maintenance',json={'enabled':True},headers=headers)
+            self.assertEqual(denied.status_code,401)
+            await self.login()
+            paused=await self.client.post('/admin/api/maintenance',json={'enabled':True},headers=headers)
+            self.assertEqual(paused.status_code,200)
+            self.assertTrue(recovery.maintenance)
+            resumed=await self.client.post('/admin/api/maintenance',json={'enabled':False},headers=headers)
+            self.assertEqual(resumed.status_code,200)
+            self.assertFalse(recovery.maintenance)
+        finally:recovery.maintenance=False

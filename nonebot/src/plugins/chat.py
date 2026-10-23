@@ -171,6 +171,26 @@ def _context(group_id: int, bot_id: int, current: dict, plan=None) -> dict:
 
 @group_chat.handle()
 async def handle_group_message(bot: Bot, event: GroupMessageEvent):
+    await dispatch_saved(bot,event)
+
+
+async def dispatch_saved(bot,event,replay=False):
+    from src import message_recovery as recovery
+    store=recovery.get_inbox()
+    if not store or event.user_id==event.self_id:
+        return await process_group_message(bot,event)
+    key=store.capture(bot.self_id,event.model_dump(mode='json'))
+    if recovery.maintenance or (str(bot.self_id) in recovery.recovering and not replay):return
+    if not store.claim(key):return
+    try:
+        await process_group_message(bot,event)
+    except BaseException:
+        store.finish(key,interrupted=True)
+        raise
+    else:store.finish(key)
+
+
+async def process_group_message(bot: Bot, event: GroupMessageEvent):
     group_id = event.group_id
     explicitly_at = event.is_tome() or any(
         seg.type == "at" and str(seg.data.get("qq")) == str(event.self_id)
@@ -297,10 +317,11 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
             if planner_enabled:
                 forced=bool(at_trigger or keyword_trigger)
                 if not forced:
-                    if not basic_candidate(text):return
+                    filtering=bool(reply_config.get('planner_filter_enabled',True))
+                    if filtering and not basic_candidate(text):return
                     fingerprint=hashlib.sha256(redact(text).encode()).hexdigest()
                     previous=planner_attempts.get(group_id)
-                    if previous and (time.monotonic()-previous[0]<float(reply_config.get('planner_interval_seconds',30)) or previous[1]==fingerprint):return
+                    if previous and (time.monotonic()-previous[0]<float(reply_config.get('planner_interval_seconds',30)) or (filtering and previous[1]==fingerprint)):return
                     # 有界清理：失败也计入间隔，防止接口故障时连续扣费。
                     for key,value in list(planner_attempts.items()):
                         if time.monotonic()-value[0]>3600:planner_attempts.pop(key,None)
@@ -335,7 +356,10 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
             logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id} 发送前等待 {delay:.2f} 秒")
             await asyncio.sleep(delay)
             message = MessageSegment.reply(event.message_id) + MessageSegment.text(reply_text)
+            from src.message_recovery import mark_sending,mark_sent
+            mark_sending(bot,event)
             sent = await bot.send(event, message)
+            mark_sent(bot,event)
             sessions[group_id].append({
                 "role": "assistant",
                 "group_id": group_id,
@@ -363,6 +387,10 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                 f"[chat] 群 {group_id} 消息 {event.message_id} 回复失败："
                 f"{type(error).__name__}，HTTP状态={status}"
             )
+            from src.message_recovery import get_inbox
+            import nonebot
+            if get_inbox() and str(bot.self_id) not in nonebot.get_bots():
+                raise
             if at_trigger:
                 try:
                     await bot.send(

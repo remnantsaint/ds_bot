@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 class ReplyLimits(BaseModel):
     planner_enabled: bool = False
-    planner_interval_seconds: float = Field(default=30,ge=5,le=3600)
+    planner_filter_enabled: bool = True
+    planner_interval_seconds: float = Field(default=30,ge=0,le=3600)
     planner_recent_records: int = Field(default=4,ge=1,le=10)
     planner_message_chars: int = Field(default=500,ge=100,le=1500)
     planner_input_tokens: int = Field(default=1000,ge=500,le=4000)
