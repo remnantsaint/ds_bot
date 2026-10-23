@@ -32,8 +32,9 @@ ds_bot/
 │   ├── requirements.txt         # 已验证的直接依赖版本
 │   ├── pyproject.toml           # 插件、适配器及依赖范围
 │   ├── .env.example             # API Key、OneBot Token 等环境变量示例
-│   ├── config.example.yaml      # 模型、回复和搜索配置示例
-│   ├── persona.example.txt      # 通用人设示例
+│   ├── .env.dev / .env.prod      # 开发 / 生产日志级别默认值
+│   ├── config.yaml              # 模型、回复和搜索的公共默认配置
+│   ├── persona.txt              # 默认人设，按需直接编辑
 │   ├── src/                     # 业务代码
 │   └── tests/                   # 离线测试
 └── napcat/
@@ -64,9 +65,6 @@ Linux / WSL 的 Bash：
 
 ```bash
 cp -n nonebot/.env.example nonebot/.env
-cp -n nonebot/.env.dev.example nonebot/.env.dev
-cp -n nonebot/config.example.yaml nonebot/config.yaml
-cp -n nonebot/persona.example.txt nonebot/persona.txt
 mkdir -p napcat/data/qq napcat/data/config napcat/data/plugins
 cp -n napcat/webui.example.json napcat/data/config/webui.json
 ```
@@ -75,14 +73,11 @@ Windows PowerShell：
 
 ```powershell
 if (!(Test-Path nonebot/.env)) { Copy-Item nonebot/.env.example nonebot/.env }
-if (!(Test-Path nonebot/.env.dev)) { Copy-Item nonebot/.env.dev.example nonebot/.env.dev }
-if (!(Test-Path nonebot/config.yaml)) { Copy-Item nonebot/config.example.yaml nonebot/config.yaml }
-if (!(Test-Path nonebot/persona.txt)) { Copy-Item nonebot/persona.example.txt nonebot/persona.txt }
 New-Item -ItemType Directory -Force -Path napcat/data/qq,napcat/data/config,napcat/data/plugins | Out-Null
 if (!(Test-Path napcat/data/config/webui.json)) { Copy-Item napcat/webui.example.json napcat/data/config/webui.json }
 ```
 
-这些命令不覆盖已有配置。已有部署请同时阅读下方“从原来部署迁移”。
+普通配置 `nonebot/config.yaml`、默认人设 `nonebot/persona.txt` 和 `.env.dev` / `.env.prod` 已随仓库提供，无需复制。只有填写密钥的 `.env` 和 WebUI 管理密码配置保留模板形式。上面的命令不覆盖已有文件。已有部署请同时阅读下方“从原来部署迁移”。
 
 ### 3. 填写配置
 
@@ -94,7 +89,9 @@ if (!(Test-Path napcat/data/config/webui.json)) { Copy-Item napcat/webui.example
 | `ONEBOT_ACCESS_TOKEN` | `nonebot/.env` | 自己设置的随机连接密码，稍后在 NapCat 里填相同值 |
 | `token` | `napcat/data/config/webui.json` | 自己设置的 NapCat WebUI 管理密码，与 OneBot Token 用途不同 |
 
-人设编辑 `nonebot/persona.txt`，模型和策略编辑 `nonebot/config.yaml`。`persona_file` 推荐使用相对于该 YAML 的路径；宿主机绝对路径不一定存在于容器中。
+直接编辑 `nonebot/config.yaml` 设置模型、回复和搜索策略，编辑 `nonebot/persona.txt` 设置人设。程序只读取 `config.yaml`，默认 `persona_file: persona.txt`；这两个文件都是公开默认文件，会参与 Git 版本管理。API Key 和连接密码仍放在 Git 忽略的 `.env` 中。
+
+`persona_file` 相对于 `config.yaml` 所在目录解析；宿主机绝对路径不一定存在于容器中。
 
 Compose 会把 NoneBot 的监听地址覆盖为容器内的 `0.0.0.0:8080`，但不将 8080 发布到宿主机；`.env` 的 `127.0.0.1` 仍可留给宿主机开发使用。NapCat WebUI 在容器内监听 `0.0.0.0:6099`，只映射到宿主机的 `127.0.0.1:6099`。
 
@@ -137,6 +134,8 @@ ssh -N -L 6099:127.0.0.1:6099 用户名@服务器地址
 `nonebot` 是容器之间的服务名，宿主机浏览器不能用它代替 WebUI 的 `127.0.0.1`。无需开放公网 8080 或 6099。
 
 ## 从原来部署迁移
+
+旧版使用 `.example` 复制普通配置；现在仓库直接提供 `config.yaml`、`persona.txt`、`.env.dev` 和 `.env.prod`。更新前先备份自己修改过的配置和人设，拉取后按需保留自己的设置。程序只读取 `nonebot/config.yaml`，不再使用本地配置优先级；默认人设文件为 `persona.txt`。密钥仍放在不提交的 `.env` 中。
 
 原来“宿主机 `nb run` + host 网络 NapCat”的数据目录不变。先备份自己的配置和 `napcat/data/`，再停止原终端或 tmux 中的 NoneBot，然后执行：
 
@@ -198,6 +197,6 @@ docker compose run --rm --no-deps nonebot python -m unittest discover -s tests -
 
 ## 上传 GitHub
 
-代码、Dockerfile、Compose、入口脚本、README、测试和示例配置可以提交。真实 `.env*`、业务配置、私人人设、NapCat 数据、日志和缓存均不提交，也不打入 NoneBot 镜像。新增私有文件需继续维护 `.gitignore`。
+代码、Dockerfile、Compose、入口脚本、README、测试、默认 `config.yaml` / `persona.txt`、仅含日志级别的 `.env.dev` / `.env.prod` 和密钥模板可以提交。真实 `.env`、NapCat 数据、日志和缓存不提交；运行配置和人设也不打入 NoneBot 镜像。新增私有文件需自行维护 `.gitignore`，提交前查看 `git diff --cached`，不要将密钥放进参与版本管理的普通配置中。
 
 DEBUG 日志可能包含环境变量，分享前遮盖密钥。本仓库尚未选择自有代码的许可证。NapCat / QQ 从上游镜像获取，遵循上游自己的许可证及限制，参见 [第三方说明](napcat/README.md#上游)。

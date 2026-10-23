@@ -139,11 +139,12 @@ dmypy.json
 .pytype/
 
 # End of https://www.toptal.com/developers/gitignore/api/python
-# Private environment files; publish examples only.
+# Private environment files; dev/prod contain public log-level defaults only.
 .env
 .env.*
 !.env.example
-!.env.*.example
+!/nonebot/.env.dev
+!/nonebot/.env.prod
 
 # Runtime files and downloaded NapCat programs.
 /napcat/data/*
@@ -155,10 +156,7 @@ dmypy.json
 # NoneBot background runtime logs and PID.
 /nonebot/.run/
 
-# Publish examples; keep each deployment's config/persona private.
-/nonebot/config.yaml
-/nonebot/persona.txt
-/nonebot/gj-persona-15-5f8b5b2f.txt
+# config.yaml and persona.txt are public defaults tracked by Git.
 
 # Background process state.
 *.pid

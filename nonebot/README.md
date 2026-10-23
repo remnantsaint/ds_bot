@@ -6,7 +6,7 @@
 
 - `Dockerfile` 安装 Python 3.11 和 `requirements.txt`，用 `python bot.py` 直接启动，便于接收容器停止信号。
 - `.dockerignore` 只允许依赖声明、启动入口和源码进入构建上下文；实际 `.env`、配置、人设和缓存不会进入镜像。
-- Compose 将宿主机 `nonebot/` 只读挂载到 `/app`，因此保留现有相对人设路径，不需公开个人配置。
+- Compose 将宿主机 `nonebot/` 只读挂载到 `/app`，直接读取其中的 `config.yaml` 和默认 `persona.txt`；密钥保存在不提交的 `.env` 中。
 - Compose 的 `env_file` 从 `nonebot/.env` 注入变量，并覆盖 `HOST=0.0.0.0`、`PORT=8080`。宿主机不发布这个端口。
 - `/healthz` 只返回 `{"status":"ok"}`，不暴露配置；它检查 HTTP 就绪，不检查 QQ 是否在线，避免与 NapCat 的启动依赖形成循环。
 
@@ -39,7 +39,11 @@ python -m pip install -r nonebot/requirements.txt
 
 容器日志级别以 `.env` 注入的 `LOG_LEVEL` 为准；如果它已设置，`.env.dev` 中的同名项不会覆盖系统环境变量。修改容器环境变量后需重新创建容器。
 
-公开示例使用 `persona_file: "persona.txt"`。将 `persona.example.txt` 复制为 `persona.txt`，按需编辑；既有部署可以继续使用原来的相对文件名。相对路径以 `config.yaml` 为基准，UTF-8 和 BOM 均支持。宿主机绝对路径在容器内不一定可用。
+仓库直接提供 `config.yaml`、默认 `persona.txt` 和仅含日志级别的 `.env.dev` / `.env.prod`，不需要复制这些文件。密钥仍从 `.env.example` 复制到 Git 忽略的 `.env` 后填写，不要写进公共配置。
+
+程序只读取 `config.yaml`，默认使用 `persona_file: "persona.txt"`。模型、回复和搜索策略直接在 `config.yaml` 中修改，人设直接在 `persona.txt` 中修改；两个文件都作为默认配置提交到 Git。
+
+相对人设路径以 `config.yaml` 所在目录为基准，UTF-8 和 BOM 均支持。宿主机绝对路径在容器内不一定可用。
 
 人设文件不存在、为空或编码错误时会明确报错。读取文件仅方便管理，每次模型请求仍会携带完整人设，不会因此自动减少输入 Token。
 
@@ -61,7 +65,7 @@ reply:
 - 当前提问、提问者和原消息 ID 明确传入，历史回答记录自己的回复对象；晚于当前提问的消息不混入该轮背景。
 - 当前仍为内存中的短期历史。重启、重建容器或重载后清空，尚无数据库、每日摘要或七天检索。
 
-`deepseek.thinking` 与 `search.enabled` 分别控制思考和自动搜索。搜索结果只用于本次工具循环，思考字段不会发到 QQ 或保存成长期记忆。搜索次数、模型参数及人设都由 `config.yaml` 管理。
+`deepseek.thinking` 与 `search.enabled` 分别控制思考和自动搜索。搜索结果只用于本次工具循环，思考字段不会发到 QQ 或保存成长期记忆。搜索次数、模型参数及人设由 `config.yaml` 管理。
 
 ## 开发位置和测试
 

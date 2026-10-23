@@ -19,7 +19,7 @@ NapCat 负责登录 QQ 并通过 OneBot 11 与 NoneBot 通信。完整安装从[
 
 URL 由容器启动脚本维护；OneBot Token 仍需在 WebUI 中设置为与 `nonebot/.env` 一致。脚本不会读取或向 NapCat 传入 DeepSeek API Key。
 
-没有 WebUI 配置时脚本会生成随机管理密码，并由上游启动日志提示；首次部署也可以从 `webui.example.json` 复制并预先填好自己的密码。容器重建不保证 QQ 自动保持登录，可能仍需扫码。
+没有 WebUI 配置时脚本会生成随机管理密码，并由上游启动日志提示；首次部署也可以从 `webui.example.json` 复制并预先填好自己的密码。该文件包含管理密码，因此保留模板形式；NoneBot 的普通配置已经直接提供默认文件。容器重建不保证 QQ 自动保持登录，可能仍需扫码。
 
 ## 数据目录
 

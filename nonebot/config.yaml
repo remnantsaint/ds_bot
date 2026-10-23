@@ -1,4 +1,4 @@
-# 首次部署复制为 config.yaml；实际 config.yaml 不提交 Git。
+# DeepSeek 模型配置
 deepseek:
   base_url: "https://api.deepseek.com"
   model: "deepseek-flash"
@@ -7,16 +7,17 @@ deepseek:
   max_tokens: 8192
   timeout_seconds: 120
 
-# 将 persona.example.txt 复制为 persona.txt，然后编辑自己的版本。
+# 人设
 persona_file: "persona.txt"
-
+# 回复策略
 reply:
-  keywords: ["小鲸"]
+  keywords: ["大肥鱼"]
   probability: 0.1
   reply_on_at: true
   cooldown_seconds: 300
   max_history: 20
 
+# DeepSeek 官方搜索：由模型自动决定，按成功的搜索请求另外计费。
 search:
   enabled: true
   max_results: 3

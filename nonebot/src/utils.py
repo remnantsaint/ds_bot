@@ -12,7 +12,7 @@ def load_config() -> dict:
         config = yaml.safe_load(file)
 
     if not isinstance(config, dict):
-        raise ValueError("config.yaml 必须包含有效的 YAML 配置")
+        raise ValueError(f"{path.name} 必须包含有效的 YAML 配置")
 
     # 相对路径以 config.yaml 所在目录为基准，不受终端工作目录影响。
     # 保留旧的内联 persona；配置 persona_file 时由文件内容优先覆盖。
