@@ -13,7 +13,7 @@
 <form id="reply" class="card"><h2>回复设置</h2><div class="grid" id="fields"></div><button>保存回复设置</button><p>模型、关键词和其他高级配置暂通过 config.yaml 管理。</p></form>
 <section class="card"><h2>持久记忆</h2><p id="memoryStatus">正在读取…</p><p>原文按群保存，近期消息直接使用，旧消息每日整理，每个周期再合并去重。只发送有限摘要和相关原文。未整理原文不会因上限而删除。</p>
 <form id="memoryForm"><label><input id="memory_enabled" type="checkbox" style="width:auto"> 启用记忆记录与整理</label><label><input id="memory_early" type="checkbox" style="width:auto"> 启用当天阈值提前整理</label><label><input id="memory_facts" type="checkbox" style="width:auto"> 启用有来源的事实记忆</label><div class="grid" id="memoryFields"></div><label for="memory_timezone">整理时区（IANA）</label><input id="memory_timezone" value="Asia/Shanghai"><label><input id="memory_verify" type="checkbox" style="width:auto"> 被质疑记错时检索本群原文</label><button>保存记忆设置</button></form></section>
-<form id="memorySearch" class="card"><h2>核查原文</h2><div class="grid"><div><label for="searchBot">机器人 QQ</label><input id="searchBot" inputmode="numeric" required></div><div><label for="searchGroup">群号</label><input id="searchGroup" inputmode="numeric" required></div></div><label for="searchQuery">关键词（可搜索已保存的全部原文）</label><input id="searchQuery" maxlength="200" required><button>检索原文</button><pre id="searchResults" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></form></main>
+<form id="memorySearch" class="card"><h2>核查原文</h2><div class="grid"><div><label for="searchBot">机器人 QQ</label><input id="searchBot" inputmode="numeric" required></div><div><label for="searchGroup">群号</label><input id="searchGroup" inputmode="numeric" required></div></div><label for="searchQuery">关键词（可搜索已保存的全部原文）</label><input id="searchQuery" maxlength="200" required><button>检索原文</button><pre id="searchResults" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></form><section class="card"><h2>事实核查与纠错</h2><p>先填写上方机器人QQ和群号。冲突不自动选定结论；核对原文后修订或停用旧条目。停用不删除原文和已有摘要。</p><button id="factsLoad">读取本群事实</button> <button id="factsPrev">上一页</button> <button id="factsNext">下一页</button><p id="factsPage"></p><div id="factsList"></div></section></main>
 <script>
 const $=id=>document.getElementById(id);let loaded=false;
 function notice(text){$('notice').hidden=false;$('notice').textContent=text}
@@ -31,4 +31,22 @@ $('savePersona').onclick=()=>run(async()=>{let v=await api('persona','PUT',{text
 $('reply').onsubmit=e=>{e.preventDefault();run(async()=>{let data={};for(const key in fields)data[key]=Number($(key).value);notice((await api('reply','PUT',data)).message)})};run(refresh);
 $('memoryForm').onsubmit=e=>{e.preventDefault();run(async()=>{let settings={facts_enabled:$('memory_facts').checked,early_enabled:$('memory_early').checked,enabled:$('memory_enabled').checked,timezone:$('memory_timezone').value,verify_on_challenge:$('memory_verify').checked};for(const key in memoryFields)settings[key]=Number($('memory_'+key).value);let payload={settings};let r=await fetch('/admin/api/memory',{method:'PUT',headers:{'Content-Type':'application/json','X-Admin-Request':'1'},body:JSON.stringify(payload)});let v=await r.json();if(r.status===409&&v.confirm_required){if(!confirm(v.detail+' 确认保存吗？'))return;v=await api('memory','PUT',{settings,confirm_retention:true})}else if(!r.ok){throw Error(v.detail||'保存失败')}notice(v.message)})};
 $('memorySearch').onsubmit=e=>{e.preventDefault();run(async()=>{const v=await api('memory/search','POST',{bot:$('searchBot').value,group:$('searchGroup').value,query:$('searchQuery').value});$('searchResults').textContent=v.results.length?JSON.stringify(v.results,null,2):'未找到相关原文；可能关键词不匹配或记录已超出保留范围。'})};
+
+let factOffset=0;
+function factScope(){return {bot:$('searchBot').value,group:$('searchGroup').value}}
+async function loadFacts(){
+ const scope=factScope(),data=await api('memory/facts','POST',{...scope,offset:factOffset});
+ $('factsList').replaceChildren();$('factsPage').textContent=`共 ${data.total} 条 · 第 ${Math.floor(factOffset/50)+1} 页`;
+ $('factsPrev').disabled=factOffset===0;$('factsNext').disabled=factOffset+50>=data.total;
+ for(const fact of data.facts){
+  const box=document.createElement('article'),info=document.createElement('p'),text=document.createElement('textarea'),status=document.createElement('select'),save=document.createElement('button'),remove=document.createElement('button'),details=document.createElement('details'),heading=document.createElement('summary'),source=document.createElement('pre');
+  info.textContent=`#${fact.fact_id} · 人物 ${fact.subject_user_id||'未知'} · 发言人 ${(fact.speaker_user_ids||[]).join(',')||'未知'} · ${fact.relation} · ${fact.statement_type||'unknown'}`+(fact.needs_review?' · 有不同说法，待核查':'')+(fact.manually_reviewed?' · 已人工修订':'');
+  text.value=fact.content;text.maxLength=500;text.style.minHeight='80px';text.setAttribute('aria-label','事实内容 '+fact.fact_id);
+  for(const [value,label] of Object.entries({uncertain:'待核查',confirmed:'已确认',tentative:'提议',cancelled:'已取消'})){const option=document.createElement('option');option.value=value;option.textContent=label;status.append(option)}status.value=fact.status;status.setAttribute('aria-label','事实状态 '+fact.fact_id);
+  save.textContent='保存修订';save.onclick=()=>run(async()=>{await api('memory/facts','PUT',{...scope,fact_id:fact.fact_id,action:'edit',content:text.value,status:status.value});await loadFacts();notice('修订已生效，原文保留')});
+  remove.textContent='停用条目';remove.onclick=()=>run(async()=>{if(!confirm('停用这条事实？原文和旧摘要仍保留。'))return;await api('memory/facts','PUT',{...scope,fact_id:fact.fact_id,action:'delete'});await loadFacts();notice('该事实已停用；原文和旧摘要仍可能包含相关说法')});
+  heading.textContent='查看来源原文与记录';source.style.whiteSpace='pre-wrap';source.style.overflowWrap='anywhere';source.textContent=JSON.stringify({source_available:fact.source_available,conflict_ids:fact.conflict_ids||[],original_content:fact.original_content,records:fact.source_records},null,2);details.append(heading,source);box.append(info,text,status,save,remove,details);$('factsList').append(box);
+ }
+}
+$('factsLoad').onclick=()=>run(async()=>{factOffset=0;await loadFacts()});$('factsPrev').onclick=()=>run(async()=>{factOffset=Math.max(0,factOffset-50);await loadFacts()});$('factsNext').onclick=()=>run(async()=>{factOffset+=50;await loadFacts()});
 </script></html>

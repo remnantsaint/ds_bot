@@ -97,3 +97,26 @@ class AdminTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code,422)
         finally:
             service.store.db.close()
+
+    async def test_fact_review_auth_scope_and_sources(self):
+        from src.memory import MemoryStore,MemoryService,MemoryConfig
+        store=MemoryStore(self.root/'facts.sqlite3');service=MemoryService(store,MemoryConfig(enabled=True))
+        record={'role':'user','user_id':202,'message_id':1,'content':'聚餐周六'}
+        rid=store.add(1,100,record,service.config)
+        store.save_facts(1,100,'2026-01-01',[{'subject':'202','subject_user_id':'202','statement_type':'self_report','relation':'聚餐','content':'聚餐周六','source_ids':[rid]}],[rid],service.config)
+        try:
+            headers={'X-Admin-Request':'1'};scope={'bot':'1','group':'100'}
+            with patch('src.memory.get_memory',return_value=service):
+                response=await self.client.post('/admin/api/memory/facts',json=scope,headers=headers)
+                self.assertEqual(response.status_code,401)
+                await self.login()
+                response=await self.client.post('/admin/api/memory/facts',json=scope,headers=headers)
+                fact=response.json()['facts'][0]
+                self.assertEqual(fact['source_records'][0]['user_id'],202)
+                body={**scope,'fact_id':fact['fact_id'],'action':'edit','content':'聚餐周日','status':'confirmed'}
+                rejected=await self.client.put('/admin/api/memory/facts',json={**body,'group':'999'},headers=headers)
+                self.assertEqual(rejected.status_code,404)
+                saved=await self.client.put('/admin/api/memory/facts',json=body,headers=headers)
+                self.assertEqual(saved.status_code,200)
+                self.assertEqual(store.list_facts(1,100)[0]['content'],'聚餐周日')
+        finally:store.db.close()

@@ -1,3 +1,4 @@
+from src.memory_privacy import redact
 import asyncio
 import random
 import time
@@ -63,7 +64,7 @@ def _message_content(event: GroupMessageEvent, names: dict[str, str]) -> str:
             elif user_id.isdecimal():
                 name = " ".join(str(names.get(user_id, "")).split())[:80]
                 parts.append(f"@{name}（QQ:{user_id}）" if name else f"@QQ:{user_id}")
-    return "".join(parts).strip()
+    return redact("".join(parts).strip())
 
 
 def _mentioned_people(event: GroupMessageEvent, names: dict[str, str]) -> list[dict]:

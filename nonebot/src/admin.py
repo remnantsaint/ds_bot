@@ -29,6 +29,19 @@ class MemoryUpdate(BaseModel):
     confirm_retention: bool = False
 
 
+class FactScope(BaseModel):
+    bot: str = Field(pattern=r'^[0-9]{1,20}$')
+    group: str = Field(pattern=r'^[0-9]{1,20}$')
+    offset: int = Field(default=0,ge=0,le=100000)
+
+
+class FactReview(FactScope):
+    fact_id: int = Field(gt=0)
+    action: str = Field(pattern=r'^(edit|delete)$')
+    content: str = Field(default='',max_length=500)
+    status: str = Field(default='uncertain',pattern=r'^(confirmed|tentative|cancelled|uncertain)$')
+
+
 def install_admin(app, root=None, password=None):
     root = Path(root) if root else Path(__file__).resolve().parents[1]
     password = password if password is not None else os.getenv("ADMIN_PASSWORD", "")
@@ -224,3 +237,37 @@ def install_admin(app, root=None, password=None):
         if not bot.isdecimal() or not group.isdecimal() or not 1 <= len(query.strip()) <= 200:
             raise HTTPException(422, "请填写机器人QQ、群号及1到200字符关键词")
         return {"results": service.store.search(bot, group, query)}
+
+
+    @app.post('/admin/api/memory/facts', include_in_schema=False)
+    async def memory_facts(data: FactScope, request: Request):
+        auth(request)
+        import json
+        from src.memory import get_memory
+        from src.memory_privacy import clean_record
+        service=get_memory()
+        if not service:
+            return {'facts':[], 'total':0}
+        facts=service.store.list_facts(data.bot,data.group)
+        page=facts[data.offset:data.offset+50]
+        for fact in page:
+            ids=fact['source_ids']
+            rows=service.store.db.execute('SELECT id,payload FROM messages WHERE bot=? AND grp=? AND id IN ('+
+                ','.join('?' for _ in ids)+')',(data.bot,data.group,*ids)).fetchall()
+            fact['source_records']=[{'record_id':row['id'],**clean_record(json.loads(row['payload']))} for row in rows]
+        return {'facts':page,'total':len(facts)}
+
+    @app.put('/admin/api/memory/facts', include_in_schema=False)
+    async def memory_fact_review(data: FactReview, request: Request):
+        auth(request)
+        from src.memory import get_memory
+        service=get_memory()
+        if not service:
+            raise HTTPException(409,'记忆未启用')
+        try:
+            service.store.review_fact(data.bot,data.group,data.fact_id,data.action,data.content,data.status)
+        except KeyError:
+            raise HTTPException(404,'事实不存在或不属于此群') from None
+        except ValueError as error:
+            raise HTTPException(422,str(error)) from None
+        return {'ok':True,'message':'事实已停用' if data.action=='delete' else '事实已人工修订；来源原文保留'}

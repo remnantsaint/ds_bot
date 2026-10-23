@@ -101,6 +101,58 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         hits=self.store.search(1,100,'吃饭',limit=1)
         self.assertIn(old,[row['record_id'] for row in hits])
 
+    def save_person_fact(self, ident, content, group=100, event_time=''):
+        rid=self.add(ident,text=content,group=group)
+        fact={'subject':'202','subject_user_id':'202','statement_type':'self_report','relation':'聚餐时间','content':content,'status':'confirmed','source_ids':[rid],'event_time':event_time}
+        self.store.save_facts(1,group,'2026-01-01',[fact],[rid],self.config)
+        return rid
+
+    async def test_conflicts_are_marked_without_selecting_truth(self):
+        self.save_person_fact(1,'聚餐周六')
+        second=self.save_person_fact(2,'聚餐周日')
+        facts=self.store.list_facts(1,100)
+        self.assertTrue(all(fact['needs_review'] for fact in facts))
+        self.assertTrue(all(fact['status']=='uncertain' for fact in facts))
+        self.assertTrue(all(fact['conflict_ids'] for fact in facts))
+        past=self.store.list_facts(1,100,second)
+        self.assertEqual(len(past),1)
+        self.assertNotIn('needs_review',past[0])
+
+    async def test_different_events_do_not_conflict(self):
+        self.save_person_fact(1,'聚餐周六',event_time='2026-01-01')
+        self.save_person_fact(2,'聚餐周日',event_time='2026-02-01')
+        self.assertTrue(all(not fact.get('needs_review') for fact in self.store.list_facts(1,100)))
+
+    async def test_manual_review_survives_reextraction_and_preserves_raw(self):
+        rid=self.save_person_fact(1,'聚餐周六')
+        fact=self.store.list_facts(1,100)[0]
+        self.store.review_fact(1,100,fact['fact_id'],'edit','聚餐周日','confirmed')
+        self.save_person_fact(1,'聚餐周六')
+        result=self.store.list_facts(1,100)[0]
+        self.assertEqual(result['content'],'聚餐周日')
+        self.assertEqual(result['original_content'],'聚餐周六')
+        self.assertTrue(result['manually_reviewed'])
+        self.assertEqual(self.store.recent(1,100,rid+1,1)[0]['content'],'聚餐周六')
+        with self.assertRaises(KeyError):self.store.review_fact(1,999,fact['fact_id'],'delete')
+        self.store.review_fact(1,100,fact['fact_id'],'delete')
+        self.assertFalse(self.store.facts_for_query(1,100,'聚餐',None))
+
+    async def test_review_does_not_attach_to_reused_fact_id(self):
+        self.save_person_fact(1,'聚餐周六')
+        ident=self.store.list_facts(1,100)[0]['fact_id']
+        self.store.review_fact(1,100,ident,'delete')
+        self.store.db.execute('DELETE FROM facts WHERE id=?',(ident,))
+        self.save_person_fact(2,'聚餐周日')
+        result=self.store.list_facts(1,100)
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['content'],'聚餐周日')
+
+    async def test_credentials_redacted_at_storage_and_retrieval(self):
+        secret='sk-'+('a'*24)
+        rid=self.add(text='api_key='+secret)
+        self.assertNotIn(secret,self.store.db.execute('SELECT payload FROM messages WHERE id=?',(rid,)).fetchone()[0])
+        self.assertIn('[已隐藏凭据]',self.store.recent(1,100,rid+1,1)[0]['content'])
+
     async def test_restart_and_duplicate_are_safe(self):
         original = self.add()
         self.assertEqual(self.add(), original)
