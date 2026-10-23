@@ -4,6 +4,10 @@
 
 ## 容器运行
 
+后台每 30 秒调用 OneBot `get_status` 检查 QQ 在线状态（5 秒超时）。状态变化时记录 `[connection]` 告警或恢复日志，不反复刷屏。
+`/readyz` 同样主动检查 QQ 的 `online` 和 `good` 字段，离线或接口不可用返回 503。
+WebSocket 断开由 NapCat 的重连机制恢复（默认 30 秒）；QQ 被踢下线或会话失效仍需人工扫码，不自动重启 NapCat，以免丢失登录状态。
+
 - `Dockerfile` 安装 Python 3.11 和 `requirements.txt`，用 `python bot.py` 直接启动，便于接收容器停止信号。
 - `.dockerignore` 只允许依赖声明、启动入口和源码进入构建上下文；实际 `.env`、配置、人设和缓存不会进入镜像。
 - Compose 将宿主机 `nonebot/` 只读挂载到 `/app`，直接读取其中的 `config.yaml` 和默认 `persona.txt`；密钥保存在不提交的 `.env` 中。
@@ -48,6 +52,17 @@ python -m pip install -r nonebot/requirements.txt
 人设文件不存在、为空或编码错误时会明确报错。读取文件仅方便管理，每次模型请求仍会携带完整人设，不会因此自动减少输入 Token。
 
 ## 回复策略与上下文
+
+同一群的同一用户连续 @ 默认间隔至少 3 秒，间隔内的重复请求忽略（`reply.user_cooldown_seconds`，0 关闭）。
+历史背景连同当前请求的序列化字符预算为 `reply.max_context_chars`（默认 16000）；超出时丢弃最旧历史，当前请求始终保留。
+此预算不包含人设和本轮工具结果，也不等同于 Token 预算。
+新增参数、历史条数、概率、冷却及延迟范围在启动时校验，错误配置拒绝加载。
+`/readyz` 返回 QQ 连接状态：已连接 200，未连接 503；主动查询 QQ 在线状态，不保证模型或消息发送可用。
+该接口不发布到宿主机；可在容器内请求。`/healthz` 仍只检查 HTTP，避免 NapCat 启动依赖循环。
+
+请求保护：每群最多保留 5 个处理中或等待中的请求，全局最多同时执行 3 个模型回答。
+每条请求从进入队列起最多等待 180 秒，超时取消并释放队列；群消息正文最多保留 4000 字符。
+对应配置为 `reply.max_pending_per_group`、`max_concurrent_requests`、`request_timeout_seconds`、`max_message_chars`，修改后重启生效。
 
 ```yaml
 reply:

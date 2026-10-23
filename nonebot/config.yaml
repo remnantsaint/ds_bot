@@ -16,6 +16,12 @@ reply:
   reply_on_at: true
   cooldown_seconds: 300
   max_history: 20
+  max_pending_per_group: 5
+  max_concurrent_requests: 3
+  request_timeout_seconds: 180
+  max_message_chars: 4000
+  max_context_chars: 16000
+  user_cooldown_seconds: 3
   delay_min_seconds: 1
   delay_max_seconds: 4
 

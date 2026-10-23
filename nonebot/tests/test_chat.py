@@ -30,10 +30,55 @@ def event(message_id, text="问题", *, group_id=1001, user_id=2, at=True,
 
 
 class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_cooldown_blocks_repeated_request(self):
+        chat.user_request_times.clear()
+        try:
+            with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}), \
+                 patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:
+                await chat.handle_group_message(self.bot, event(710))
+                await chat.handle_group_message(self.bot, event(711))
+                self.assertEqual(model.await_count, 1)
+        finally:
+            chat.user_request_times.clear()
+
+    def test_context_budget_removes_oversized_history(self):
+        chat.sessions[1001].append({"role": "user", "sequence": 1, "content": "x" * 1000})
+        with patch.dict(chat.reply_config, {"max_context_chars": 100}):
+            context = chat._context(1001, 1, {"sequence": 2, "content": "当前问题"})
+        self.assertEqual(context["conversation"], [])
+
+    def test_invalid_limits_fail_validation(self):
+        from src.utils import ReplyLimits
+        for values in ({"max_concurrent_requests": 0}, {"max_pending_per_group": -1},
+                       {"delay_min_seconds": 5, "delay_max_seconds": 1}):
+            with self.assertRaises(ValueError):
+                ReplyLimits.model_validate(values)
+
+    async def test_full_queue_does_not_call_model(self):
+        chat.pending_requests[1001] = 5
+        try:
+            with patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock) as model:
+                await chat.handle_group_message(self.bot, event(700))
+                model.assert_not_awaited()
+                self.assertIn("当前提问较多", str(self.bot.send.call_args.args[1]))
+        finally:
+            chat.pending_requests.clear()
+
+    async def test_total_timeout_releases_group_lock_and_counter(self):
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(10)
+        with patch.dict(chat.reply_config, {"request_timeout_seconds": 0.02}), \
+             patch.object(chat.deepseek_client, "chat", side_effect=slow):
+            await chat.handle_group_message(self.bot, event(701))
+        self.assertFalse(chat.group_locks[1001].locked())
+        self.assertNotIn(1001, chat.pending_requests)
+        self.assertIn("超时", str(self.bot.send.call_args.args[1]))
+
     async def asyncSetUp(self):
         self.reset()
         self.policy = patch.dict(chat.reply_config, {
             "probability": 0, "keywords": ["大肥鱼"],
+            "user_cooldown_seconds": 0,
             "reply_on_at": True, "cooldown_seconds": 300, "max_history": 20,
             "delay_min_seconds": 0, "delay_max_seconds": 0,
         })
@@ -43,6 +88,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def reset():
+        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()

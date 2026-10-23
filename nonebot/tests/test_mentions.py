@@ -27,12 +27,13 @@ def event(ident, parts, *, group_id=1001, user_id=2, to_me=False):
 
 class MentionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.group_locks.clear()
         chat.group_sequences.clear()
         chat.last_reply_time.clear()
         policy = patch.dict(chat.reply_config, {
-            "probability": 0, "keywords": ["大肥鱼"], "reply_on_at": True,
+            "user_cooldown_seconds": 0, "probability": 0, "keywords": ["大肥鱼"], "reply_on_at": True,
             "cooldown_seconds": 300, "delay_min_seconds": 0, "delay_max_seconds": 0,
         })
         policy.start()
@@ -45,6 +46,7 @@ class MentionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.group_locks.clear()
         chat.group_sequences.clear()

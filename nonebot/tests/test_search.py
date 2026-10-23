@@ -175,12 +175,14 @@ class GroupIsolationTests(unittest.IsolatedAsyncioTestCase):
         delay_policy = patch.dict(chat.reply_config, {"delay_min_seconds": 0, "delay_max_seconds": 0})
         delay_policy.start()
         self.addCleanup(delay_policy.stop)
+        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()
         chat.group_sequences.clear()
 
     async def asyncTearDown(self):
+        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()

@@ -1,6 +1,7 @@
 import asyncio
 import random
 import time
+import json
 from collections import defaultdict, deque
 
 from nonebot import logger, on_message
@@ -17,6 +18,9 @@ sessions = defaultdict(lambda: deque(maxlen=int(reply_config["max_history"])))
 last_reply_time: dict[int, float] = {}
 group_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 group_sequences: dict[int, int] = defaultdict(int)
+pending_requests: dict[int, int] = defaultdict(int)
+user_request_times: dict[tuple[int, int], float] = {}
+model_slots = asyncio.Semaphore(int(reply_config.get("max_concurrent_requests", 3)))
 
 group_chat = on_message(priority=10, block=False)
 
@@ -91,6 +95,16 @@ def _context(group_id: int, bot_id: int, current: dict) -> dict:
         if item["sequence"] < current["sequence"]
     ]
     history.sort(key=lambda item: (item["sequence"], item["role"] == "assistant"))
+    budget = int(reply_config.get("max_context_chars", 16000))
+    retained = []
+    used = len(json.dumps(current, ensure_ascii=False))
+    for item in reversed(history):
+        size = len(json.dumps(item, ensure_ascii=False))
+        if used + size > budget:
+            break
+        retained.append(item)
+        used += size
+    history = list(reversed(retained))
     return {
         "group_id": group_id,
         "bot_user_id": bot_id,
@@ -101,6 +115,49 @@ def _context(group_id: int, bot_id: int, current: dict) -> dict:
 
 @group_chat.handle()
 async def handle_group_message(bot: Bot, event: GroupMessageEvent):
+    group_id = event.group_id
+    explicitly_at = event.is_tome() or any(
+        seg.type == "at" and str(seg.data.get("qq")) == str(event.self_id)
+        for seg in event.message)
+    if event.user_id == event.self_id:
+        return
+    if explicitly_at and reply_config.get("reply_on_at", True):
+        now = time.monotonic()
+        cooldown = float(reply_config.get("user_cooldown_seconds", 3))
+        key = (group_id, event.user_id)
+        if now - user_request_times.get(key, float("-inf")) < cooldown:
+            return
+        # 清理过期记录，避免按用户永久增长。
+        for stale in [k for k, timestamp in user_request_times.items() if now - timestamp >= cooldown]:
+            user_request_times.pop(stale, None)
+        user_request_times[key] = now
+    if pending_requests[group_id] >= int(reply_config.get("max_pending_per_group", 5)):
+        if event.is_tome():
+            try:
+                await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
+                    + MessageSegment.text("当前提问较多，请稍后再试。")), timeout=10)
+            except Exception:
+                logger.warning("[chat] 排队已满提示发送失败")
+        return
+    pending_requests[group_id] += 1
+    try:
+        await asyncio.wait_for(_handle_group_message(bot, event),
+            timeout=float(reply_config.get("request_timeout_seconds", 180)))
+    except asyncio.TimeoutError:
+        logger.warning(f"[chat] 群 {group_id} 请求总超时，已释放队列")
+        if event.is_tome():
+            try:
+                await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
+                    + MessageSegment.text("这条提问等待超时了，请稍后重试。")), timeout=10)
+            except Exception:
+                logger.warning("[chat] 超时提示发送失败")
+    finally:
+        pending_requests[group_id] -= 1
+        if pending_requests[group_id] == 0:
+            pending_requests.pop(group_id, None)
+
+
+async def _handle_group_message(bot: Bot, event: GroupMessageEvent):
     if event.user_id == event.self_id:
         return
 
@@ -126,7 +183,7 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         "message_id": event.message_id,
         "user_id": event.user_id,
         "nickname": event.sender.card or event.sender.nickname or "群友",
-        "content": _message_content(event, names),
+        "content": _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))],
         "mentions_bot": is_at_bot,
         "mentioned_user_ids": mentioned_users,
         "mentioned_users": _mentioned_people(event, names),
@@ -163,11 +220,12 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         messages = [{"role": "system", "content": config["persona"]}]
         try:
             await _resolve_mention_names(bot, event, names)
-            current["content"] = _message_content(event, names)
+            current["content"] = _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))]
             current["mentioned_users"] = _mentioned_people(event, names)
             context = _context(group_id, event.self_id, current)
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 用户 {event.user_id} 开始调用 DeepSeek")
-            reply_text = await deepseek_client.chat(messages, context=context)
+            async with model_slots:
+                reply_text = await deepseek_client.chat(messages, context=context)
             # 在同群锁内延迟发送，不收集或合并期间收到的其他提问。
             delay = random.uniform(
                 float(reply_config.get("delay_min_seconds", 1)),
