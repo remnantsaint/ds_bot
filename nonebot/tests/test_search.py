@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import nonebot
+from nonebot.adapters.onebot.v11 import MessageSegment
 from openai.types.chat import ChatCompletion
 
 try:
@@ -171,6 +172,9 @@ class ToolFlowTests(unittest.IsolatedAsyncioTestCase):
 
 class GroupIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        delay_policy = patch.dict(chat.reply_config, {"delay_min_seconds": 0, "delay_max_seconds": 0})
+        delay_policy.start()
+        self.addCleanup(delay_policy.stop)
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()
@@ -184,7 +188,7 @@ class GroupIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def event(group_id, text):
-        return SimpleNamespace(user_id=2, self_id=1, group_id=group_id, message_id=123, sender=SimpleNamespace(card="", nickname="群友"), message=[], get_plaintext=lambda: text, is_tome=lambda: True)
+        return SimpleNamespace(user_id=2, self_id=1, group_id=group_id, message_id=123, sender=SimpleNamespace(card="", nickname="群友"), message=[MessageSegment.text(text)], get_plaintext=lambda: text, is_tome=lambda: True)
 
     async def test_different_groups_never_receive_each_others_history(self):
         bot = SimpleNamespace(send=AsyncMock())

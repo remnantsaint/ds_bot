@@ -12,10 +12,12 @@ persona_file: "persona.txt"
 # 回复策略
 reply:
   keywords: ["大肥鱼"]
-  probability: 0.1
+  probability: 0  # 关闭概率随机回复；保留 @机器人和关键词触发
   reply_on_at: true
   cooldown_seconds: 300
   max_history: 20
+  delay_min_seconds: 1
+  delay_max_seconds: 4
 
 # DeepSeek 官方搜索：由模型自动决定，按成功的搜索请求另外计费。
 search:
@@ -31,3 +33,12 @@ fetch:
   max_fetches: 2
   timeout_seconds: 30
   content_chars: 6000
+
+# 群内成品图片：不调用 DeepSeek；北京时间当天无图时明确提示失败。
+briefing:
+  enabled: true
+  news_commands: ["今日新闻"]
+  weather_commands: ["今日天气", "今日气温"]
+  weather_cache_seconds: 3600
+  failure_cache_seconds: 60
+  timeout_seconds: 15

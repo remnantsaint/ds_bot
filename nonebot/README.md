@@ -52,14 +52,19 @@ python -m pip install -r nonebot/requirements.txt
 ```yaml
 reply:
   keywords: ["小鲸"]
-  probability: 0.1
+  probability: 0
   reply_on_at: true
   cooldown_seconds: 300
   max_history: 20
+  delay_min_seconds: 1
+  delay_max_seconds: 4
 ```
 
 - @ 或适配器认定发给机器人的消息按同群接收顺序排队，不受自动回复冷却限制。
-- 未 @ 时可由关键词或概率触发，受冷却限制；忙碌时只记录背景。
+- 生成完成后，发送前随机等待 `delay_min_seconds` 到 `delay_max_seconds` 秒（默认 1～4 秒）；两项均为 `0` 可关闭。等待仍在同群锁内，不合并后续提问；总响应时间还包含模型和工具耗时。
+- 未 @ 时由关键词触发，受冷却限制；概率随机回复默认关闭（`probability: 0`），忙碌时只记录背景。发送前的随机延迟是独立设置，不受此开关影响。
+- 正文按原顺序保留 `@昵称（QQ:号码）`，并在 `mentioned_users` 中提供被提及的成员信息；机器人自身的 @ 只用于触发，`@全体成员` 单独标记。
+- @ 对象的名称优先用本群已有发言中的名片/昵称，缺失时在同群队列内查询成员信息；查询失败保留 QQ 号，不跨群取名，也不会因查名片让后来的提问插队。
 - 冷却从成功发送回答后计算；失败不消耗冷却时间。
 - `max_history` 计入群友消息及机器人成功回复，每群分别保存；同群成员共享本群背景。
 - 当前提问、提问者和原消息 ID 明确传入，历史回答记录自己的回复对象；晚于当前提问的消息不混入该轮背景。
@@ -86,6 +91,28 @@ fetch:
 正常工具调用通过 `tool_calls` 执行。正文里出现 DSML / invoke 标记时最多重试一次，不执行文本中的指令，也不把异常正文写进上下文；再次失败则由聊天处理器给出失败提示。工具调用的 `reasoning_content` 仍在本轮原样保留。
 
 查看日志里的 `[fetch] 网页抓取完成` / `[fetch] 网页抓取不可用` 和 `[tools] 检测到正文工具标记`，可以区分成功抓取、失败和格式异常恢复。
+
+## 新闻与气温图片
+
+`src/plugins/briefing.py` 是独立图片插件，匹配优先级为 5，早于聊天插件的 10。仅接受群内完整关键词；无需 @，也支持 @机器人。命中后阻止继续进入聊天模型，不消耗聊天冷却，不保存为聊天记忆。
+
+```yaml
+briefing:
+  enabled: true
+  news_commands: ["今日新闻"]
+  weather_commands: ["今日天气", "今日气温"]
+  weather_cache_seconds: 3600
+  failure_cache_seconds: 60
+  timeout_seconds: 15
+```
+
+`enabled: false` 可关闭。新闻从 `https://60s.viki.moe/v2/60s` 返回的日期和图片地址获取；天气提取 `https://www.nmc.cn/publish/temperature/hight/24hour.html` 中的当前最高气温 24 小时预报产品，不写死日期链接。北京时间当天无图则提示尚未更新；网络、图片下载或发送失败也会给出提示。不会自动退回昨天的图。
+
+新闻缓存当天有效；天气按 `weather_cache_seconds` 刷新；失败按 `failure_cache_seconds` 短暂缓存以减少重复请求。所有缓存跨北京时间零点失效，各群和天气两个别名共用缓存，并发请求合并取图。缓存仅占内存，不写磁盘，重启即清空。
+
+天气文字标注图片发布时次。晚间发布的未来 24 小时预报可能覆盖次日，**预报起止时段以图内标题为准**。图片通过 NoneBot 下载为字节后交给 OneBot 发送，NapCat 无需访问新闻或气象来源。图片大小限制为 8 MiB；来源域名和跳转均受限制。
+
+日志 `[briefing] ... 获取当日图片成功` / `命中当日图片缓存` / `图片发送成功` 可区分取图、缓存和发送。来源限流、不可用或页面改版时可能失败；这些请求不经过 DeepSeek，不产生模型 Token 用量。
 
 ## 开发位置和测试
 

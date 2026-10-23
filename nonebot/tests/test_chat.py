@@ -23,7 +23,7 @@ def event(message_id, text="问题", *, group_id=1001, user_id=2, at=True,
     return SimpleNamespace(
         message_id=message_id, group_id=group_id, user_id=user_id, self_id=1,
         sender=SimpleNamespace(card="", nickname="同名群友"),
-        message=([MessageSegment.at(1)] if at else []) + (mentions or []),
+        message=([MessageSegment.at(1)] if at else []) + (mentions or []) + [MessageSegment.text(text)],
         reply=SimpleNamespace(message_id=quoted_id) if quoted_id is not None else None,
         get_plaintext=lambda: text, is_tome=lambda: at if to_me is None else to_me,
     )
@@ -35,6 +35,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
         self.policy = patch.dict(chat.reply_config, {
             "probability": 0, "keywords": ["大肥鱼"],
             "reply_on_at": True, "cooldown_seconds": 300, "max_history": 20,
+            "delay_min_seconds": 0, "delay_max_seconds": 0,
         })
         self.policy.start()
         self.bot = SimpleNamespace(send=AsyncMock(return_value={"message_id": 9000}))
