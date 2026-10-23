@@ -24,3 +24,10 @@ search:
   max_searches: 1
   timeout_seconds: 15
   summary_chars: 1200
+
+# DeepSeek 官方网页抓取：由模型自动决定，复用同一个 API Key。
+fetch:
+  enabled: true
+  max_fetches: 2
+  timeout_seconds: 30
+  content_chars: 6000

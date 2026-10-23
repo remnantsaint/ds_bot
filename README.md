@@ -1,6 +1,6 @@
 # ds_bot
 
-基于 **NoneBot2 + NapCat + DeepSeek API** 的 QQ 群聊天机器人，支持人设、按群隔离的短期上下文，以及模型自动决定的联网搜索。
+基于 **NoneBot2 + NapCat + DeepSeek API** 的 QQ 群聊天机器人，支持人设、按群隔离的短期上下文，以及模型自动决定的联网搜索和网页抓取。
 
 **默认部署为两个 Docker 容器**：NoneBot 处理聊天业务，NapCat 登录 QQ。Compose 通过服务名连接它们，宿主机无需安装 Python 或 Conda。当前在 Linux 上验证，Windows 可使用 Docker Desktop 的 Linux 容器模式；本项目不需要 Docker Desktop 的 host networking 功能。
 
@@ -17,6 +17,8 @@ QQ 群 ↔ NapCat 容器 ↔ ws://nonebot:8080/onebot/v11/ws ↔ NoneBot 容器 
 - 不同群分别记录上下文，同群成员共享本群背景，并标记发言人、消息和回复对象。
 - 默认保留每群最近 20 条记录，群友消息和机器人成功回复都计数；重启 NoneBot 后清空。
 - 模型自行决定是否搜索，默认每次回复最多搜索一次；程序不追加固定来源尾注。
+- 可打开用户提供或搜索找到的公开网页，默认每次回复最多抓取 2 次，每页向模型提供最多 6000 字符正文。
+- 异常 DSML 工具标记会拦截并重试一次，不作为回答发送，也不保存进群聊历史。
 - 尚未实现识图、知识库、持久化记忆、每日摘要或七天历史检索。
 
 ## 目录
@@ -184,6 +186,20 @@ docker compose up -d
 ## 搜索、记忆与测试
 
 搜索使用 [DeepSeek 官方 Search API](https://api-docs.deepseek.com/guides/search/)，复用 API Key，按平台规则计费。思考开关和搜索开关独立；每次模型请求仍携带完整人设及本群短期上下文。
+
+网页抓取使用同一平台的 Fetch API，复用 `.env` 中的 `DEEPSEEK_API_KEY`，不需要额外账号或浏览器依赖。模型可在搜索后调用 `web_fetch` 读取链接，也可直接读取用户提供的链接。`config.yaml` 中的 `fetch` 独立于 `search` 开关：
+
+```yaml
+fetch:
+  enabled: true
+  max_fetches: 2
+  timeout_seconds: 30
+  content_chars: 6000
+```
+
+抓取取得的是可提取的网页正文，不保证包含 JavaScript 动态数据、需要登录的内容或完整 FFLogs 角色记录。页面不可读取时，机器人会根据工具返回说明限制；本项目不绕过站点访问控制。成功抓取按平台规则计费，正文作为下一次模型调用的输入，也会增加输入 Token。
+
+日志中的 `[search] 联网搜索完成` 和 `[fetch] 网页抓取完成` 可用于确认实际调用。`[tools] 检测到正文工具标记` 表示触发了异常恢复；重复异常会返回失败提示，不会将标签原样发送。没有固定“来源”尾注。
 
 本次容器化没有加入长期记忆或每日摘要任务，也不会自动产生摘要模型调用。20 条限制控制当前短期上下文；七天原始记录、每日摘要和旧事检索仍是后续功能。
 

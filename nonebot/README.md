@@ -65,7 +65,27 @@ reply:
 - 当前提问、提问者和原消息 ID 明确传入，历史回答记录自己的回复对象；晚于当前提问的消息不混入该轮背景。
 - 当前仍为内存中的短期历史。重启、重建容器或重载后清空，尚无数据库、每日摘要或七天检索。
 
-`deepseek.thinking` 与 `search.enabled` 分别控制思考和自动搜索。搜索结果只用于本次工具循环，思考字段不会发到 QQ 或保存成长期记忆。搜索次数、模型参数及人设由 `config.yaml` 管理。
+`deepseek.thinking`、`search.enabled` 和 `fetch.enabled` 分别控制思考、自动搜索和网页抓取。工具结果只用于本次工具循环，思考字段不会发到 QQ 或保存成长期记忆。工具次数、模型参数及人设由 `config.yaml` 管理。
+
+## 网页抓取和工具异常处理
+
+`web_fetch` 通过 DeepSeek 官方 `POST /v1/tools/fetch` 读取公开网页，复用现有 API Key；宿主机不直接访问目标 URL，不需要添加 Python 依赖。配置如下：
+
+```yaml
+fetch:
+  enabled: true
+  max_fetches: 2
+  timeout_seconds: 30
+  content_chars: 6000
+```
+
+搜索和抓取的次数独立限制，失败尝试也占用本轮次数，避免持续重试。搜索用完后若还有抓取次数，模型仍可读取已找到的网页。关闭抓取时设 `fetch.enabled: false`；旧配置没有 `fetch` 段时默认关闭。
+
+只允许无账号密码的公开 HTTP/HTTPS URL；不支持登录、验证码或执行网页脚本。正文超过上限会标记 `truncated`，抓取失败会将明确的错误交给模型，不能据此编造缺失的角色记录。实际请求还受 DeepSeek 和目标站点的访问政策限制。
+
+正常工具调用通过 `tool_calls` 执行。正文里出现 DSML / invoke 标记时最多重试一次，不执行文本中的指令，也不把异常正文写进上下文；再次失败则由聊天处理器给出失败提示。工具调用的 `reasoning_content` 仍在本轮原样保留。
+
+查看日志里的 `[fetch] 网页抓取完成` / `[fetch] 网页抓取不可用` 和 `[tools] 检测到正文工具标记`，可以区分成功抓取、失败和格式异常恢复。
 
 ## 开发位置和测试
 
@@ -75,6 +95,7 @@ reply:
 | `src/plugins/chat.py` | 消息触发、排队、按群上下文和发送回答 |
 | `src/deepseek_client.py` | 模型请求、回复对象及搜索工具循环 |
 | `src/search.py` | 搜索工具和 HTTP 接口 |
+| `src/fetch.py` | 网页抓取、URL 校验和正文长度限制 |
 | `src/utils.py` | YAML 与人设加载、缓存 |
 | `src/vision.py` | 当前为空，尚未实现识图 |
 
@@ -86,4 +107,4 @@ reply:
 docker compose run --rm --no-deps nonebot python -m unittest discover -s tests -v
 ```
 
-或在本目录的开发环境执行 `python -m unittest discover -s tests -v`。测试覆盖上下文隔离、同群排队、失败释放、搜索边界、人设加载和启动健康接口，不请求真实 API 或发送 QQ 消息。
+或在本目录的开发环境执行 `python -m unittest discover -s tests -v`。测试覆盖上下文隔离、同群排队、失败释放、搜索和抓取边界、DSML 异常恢复、人设加载和启动健康接口，不请求真实 API 或发送 QQ 消息。

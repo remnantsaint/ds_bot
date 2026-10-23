@@ -100,6 +100,9 @@ class ToolFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.client = DeepSeekClient()
         self.client.search_config = SearchConfig()
+        if self.client.fetch_client is not None:
+            await self.client.fetch_client.close()
+            self.client.fetch_client = None
         if self.client.search_client is None:
             self.client.search_client = WebSearchClient("test-only", self.client.search_config)
         self.messages = [{"role": "system", "content": "鲸鱼娘人设"}, {"role": "user", "content": "群友: 问题"}]
