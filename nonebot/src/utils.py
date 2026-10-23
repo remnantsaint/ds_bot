@@ -11,6 +11,7 @@ class ReplyLimits(BaseModel):
     request_timeout_seconds: float = Field(default=180, ge=1, le=600)
     max_message_chars: int = Field(default=4000, ge=100, le=20000)
     max_context_chars: int = Field(default=16000, ge=100, le=100000)
+    max_context_tokens: int = Field(default=6000, ge=500, le=32000)
     user_cooldown_seconds: float = Field(default=3, ge=0, le=3600)
     max_history: int = Field(default=20, ge=0, le=200)
     probability: float = Field(default=0, ge=0, le=1)
@@ -36,6 +37,9 @@ def load_config() -> dict:
         raise ValueError(f"{path.name} 必须包含有效的 YAML 配置")
     limits = ReplyLimits.model_validate(config.get("reply", {}))
     config.setdefault("reply", {}).update(limits.model_dump())
+    if "memory" in config:
+        from src.memory import MemoryConfig
+        config["memory"] = MemoryConfig.model_validate(config["memory"]).model_dump()
 
     if "persona_file" in config:
         config["persona"] = load_persona(config)

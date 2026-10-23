@@ -30,6 +30,29 @@ def event(message_id, text="问题", *, group_id=1001, user_id=2, at=True,
 
 
 class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_memory_open_failure_does_not_break_chat(self):
+        with patch.object(chat,'get_memory',side_effect=OSError('disk unavailable')), \
+             patch.object(chat.deepseek_client,'chat',new_callable=AsyncMock,return_value='答案') as model:
+            await chat.handle_group_message(self.bot,event(979))
+            model.assert_awaited_once()
+    async def test_persistent_history_is_scoped_and_attached_to_model_context(self):
+        import tempfile
+        from pathlib import Path
+        from src.memory import MemoryStore,MemoryService,MemoryConfig
+        with tempfile.TemporaryDirectory() as folder:
+            service=MemoryService(MemoryStore(Path(folder)/'memory.sqlite3'),MemoryConfig(enabled=True))
+            try:
+                with patch.object(chat,'get_memory',return_value=service), \
+                     patch.object(chat.deepseek_client,'chat',new_callable=AsyncMock,return_value='答案') as model:
+                    await chat.handle_group_message(self.bot,event(980,'昨天约好周日聚餐',at=False))
+                    await chat.handle_group_message(self.bot,event(981,'聚餐你记错了'))
+                    context=model.await_args.kwargs['context']
+                    self.assertTrue(context['memory']['verification_requested'])
+                    self.assertTrue(context['memory']['evidence'])
+                    self.assertEqual(context['conversation'][0]['message_id'],980)
+                    self.assertEqual(service.store.status()['records'],3)
+            finally:
+                service.store.db.close()
     async def test_each_answer_uses_latest_persona_and_read_failure_skips_model(self):
         with patch.object(chat, "load_persona", side_effect=["旧人设", "新人设", ValueError("人设为空")]), \
              patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:

@@ -10,8 +10,8 @@ WebSocket 断开由 NapCat 的重连机制恢复（默认 30 秒）；QQ 被踢�
 
 - `Dockerfile` 安装 Python 3.11 和 `requirements.txt`，用 `python bot.py` 直接启动，便于接收容器停止信号。
 - `.dockerignore` 只允许依赖声明、启动入口和源码进入构建上下文；实际 `.env`、配置、人设和缓存不会进入镜像。
-- Compose 将宿主机 `nonebot/` 只读挂载到 `/app`，直接读取其中的 `config.yaml` 和默认 `persona.txt`；密钥保存在不提交的 `.env` 中。
-- Compose 的 `env_file` 从 `nonebot/.env` 注入变量，并覆盖 `HOST=0.0.0.0`、`PORT=8080`。宿主机不发布这个端口。
+- Compose 将宿主机 `nonebot/` 可写挂载到 `/app`，以支持后台保存配置，直接读取其中的 `config.yaml` 和默认 `persona.txt`；密钥保存在不提交的 `.env` 中。
+- Compose 的 `env_file` 从 `nonebot/.env` 注入变量，并覆盖 `HOST=0.0.0.0`、`PORT=8080`。默认将容器8080映射到宿主机127.0.0.1:8088，后台入口为 /admin；局域网绑定见根目录 ADMIN.md。
 - `/healthz` 只返回 `{"status":"ok"}`，不暴露配置；它检查 HTTP 就绪，不检查 QQ 是否在线，避免与 NapCat 的启动依赖形成循环。
 
 在仓库根目录查看和操作：
@@ -21,7 +21,7 @@ docker compose logs -f --tail=100 nonebot
 docker compose restart nonebot
 ```
 
-代码和 YAML 在进程中缓存，修改后重启。人设文件每次生成回答前重新读取，保存后下一轮生效，正在生成的回答不受影响。文件为空、丢失或编码错误时该轮失败，不使用空人设或旧人设，修复文件后自动恢复。修改 `.env` 后用 `docker compose up -d --force-recreate nonebot` 重新创建容器以刷新注入的变量；修改依赖后用 `docker compose up -d --build nonebot`。
+代码与直接编辑的 YAML 修改后需重启；通过后台保存支持的回复和记忆参数则即时生效。人设文件每次生成回答前重新读取，保存后下一轮生效，正在生成的回答不受影响。文件为空、丢失或编码错误时该轮失败，不使用空人设或旧人设，修复文件后自动恢复。修改 `.env` 后用 `docker compose up -d --force-recreate nonebot` 重新创建容器以刷新注入的变量；修改依赖后用 `docker compose up -d --build nonebot`。
 
 ## 宿主机开发入口
 
@@ -63,11 +63,11 @@ python -m pip install -r nonebot/requirements.txt
 此预算不包含人设和本轮工具结果，也不等同于 Token 预算。
 新增参数、历史条数、概率、冷却及延迟范围在启动时校验，错误配置拒绝加载。
 `/readyz` 返回 QQ 连接状态：已连接 200，未连接 503；主动查询 QQ 在线状态，不保证模型或消息发送可用。
-该接口不发布到宿主机；可在容器内请求。`/healthz` 仍只检查 HTTP，避免 NapCat 启动依赖循环。
+该接口随HTTP服务通过宿主机8088端口映射，可请求 /readyz。`/healthz` 仍只检查 HTTP，避免 NapCat 启动依赖循环。
 
 请求保护：每群最多保留 5 个处理中或等待中的请求，全局最多同时执行 3 个模型回答。
 每条请求从进入队列起最多等待 180 秒，超时取消并释放队列；群消息正文最多保留 4000 字符。
-对应配置为 `reply.max_pending_per_group`、`max_concurrent_requests`、`request_timeout_seconds`、`max_message_chars`，修改后重启生效。
+对应配置为 `reply.max_pending_per_group`、`max_concurrent_requests`、`request_timeout_seconds`、`max_message_chars`。直接编辑YAML需重启；后台支持的排队上限和超时保存即生效，全局并发与消息长度仍需重启。
 
 ```yaml
 reply:
@@ -88,7 +88,7 @@ reply:
 - 冷却从成功发送回答后计算；失败不消耗冷却时间。
 - `max_history` 计入群友消息及机器人成功回复，每群分别保存；同群成员共享本群背景。
 - 当前提问、提问者和原消息 ID 明确传入，历史回答记录自己的回复对象；晚于当前提问的消息不混入该轮背景。
-- 当前仍为内存中的短期历史。重启、重建容器或重载后清空，尚无数据库、每日摘要或七天检索。
+- 短期缓存重启后清空；启用持久记忆时，原文和摘要保存在SQLite中，可在重启后继续参与回答，参见根目录 MEMORY.md。
 
 `deepseek.thinking`、`search.enabled` 和 `fetch.enabled` 分别控制思考、自动搜索和网页抓取。工具结果只用于本次工具循环，思考字段不会发到 QQ 或保存成长期记忆。工具次数、模型参数及人设由 `config.yaml` 管理。
 
@@ -151,7 +151,7 @@ briefing:
 在仓库根目录运行容器内离线测试：
 
 ```bash
-docker compose run --rm --no-deps nonebot python -m unittest discover -s tests -v
+docker compose run --rm --no-deps -e MEMORY_ENABLED=false nonebot python -m unittest discover -s tests -v
 ```
 
 或在本目录的开发环境执行 `python -m unittest discover -s tests -v`。测试覆盖上下文隔离、同群排队、失败释放、搜索和抓取边界、DSML 异常恢复、人设加载和启动健康接口，不请求真实 API 或发送 QQ 消息。

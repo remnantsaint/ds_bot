@@ -1,18 +1,28 @@
-# DeepSeek 模型配置
 deepseek:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-flash"
-  thinking: "enabled"
+  base_url: https://api.deepseek.com
+  model: deepseek-flash
+  thinking: enabled
   temperature: 1.3
   max_tokens: 8192
   timeout_seconds: 120
-
-# 人设
-persona_file: "persona.txt"
-# 回复策略
+persona_file: persona.txt
+memory:
+  enabled: true
+  max_records: 10000
+  recent_records: 20
+  timezone: Asia/Shanghai
+  daily_hour: 3
+  daily_minute: 0
+  merge_days: 10
+  summary_chars: 1800
+  batch_chars: 12000
+  max_calls_per_run: 12
+  context_chars: 4000
+  verify_on_challenge: true
 reply:
-  keywords: ["大肥鱼"]
-  probability: 0  # 关闭概率随机回复；保留 @机器人和关键词触发
+  keywords:
+  - 大肥鱼
+  probability: 0
   reply_on_at: true
   cooldown_seconds: 300
   max_history: 20
@@ -24,27 +34,24 @@ reply:
   user_cooldown_seconds: 3
   delay_min_seconds: 1
   delay_max_seconds: 4
-
-# DeepSeek 官方搜索：由模型自动决定，按成功的搜索请求另外计费。
 search:
   enabled: true
   max_results: 3
   max_searches: 1
   timeout_seconds: 15
   summary_chars: 1200
-
-# DeepSeek 官方网页抓取：由模型自动决定，复用同一个 API Key。
 fetch:
   enabled: true
   max_fetches: 2
   timeout_seconds: 30
   content_chars: 6000
-
-# 群内成品图片：不调用 DeepSeek；北京时间当天无图时明确提示失败。
 briefing:
   enabled: true
-  news_commands: ["今日新闻"]
-  weather_commands: ["今日天气", "今日气温"]
+  news_commands:
+  - 今日新闻
+  weather_commands:
+  - 今日天气
+  - 今日气温
   weather_cache_seconds: 3600
   failure_cache_seconds: 60
   timeout_seconds: 15

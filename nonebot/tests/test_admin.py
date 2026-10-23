@@ -1,0 +1,99 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch, AsyncMock
+
+import httpx
+from fastapi import FastAPI
+from src.admin import install_admin
+
+
+class AdminTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = {"persona_file": "persona.txt", "reply": {}}
+        (self.root / "persona.txt").write_text("原人设", encoding="utf-8")
+        self.app = FastAPI()
+        install_admin(self.app, self.root, "test-password-long-enough")
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self.temp.cleanup()
+
+    async def login(self):
+        return await self.client.post("/admin/api/login", json={"password": "test-password-long-enough"}, headers={"X-Admin-Request": "1"})
+
+    async def test_auth_csrf_logout(self):
+        self.assertEqual((await self.client.get("/admin/api/state")).status_code, 401)
+        self.assertEqual((await self.client.post("/admin/api/login", json={"password": "x"})).status_code, 403)
+        self.assertEqual((await self.login()).status_code, 200)
+        headers = {"X-Admin-Request": "1", "Origin": "http://evil"}
+        self.assertEqual((await self.client.post("/admin/api/logout", json={}, headers=headers)).status_code, 403)
+        self.assertEqual((await self.client.post("/admin/api/logout", json={}, headers={"X-Admin-Request": "1"})).status_code, 200)
+        self.assertEqual((await self.client.get("/admin/api/state")).status_code, 401)
+
+    async def test_persona_validation_and_atomic_save(self):
+        await self.login()
+        with patch("src.admin.load_config", return_value=self.config):
+            for text, expected in [("  ", 422), ("新人设", 200)]:
+                result = await self.client.put("/admin/api/persona", json={"text": text}, headers={"X-Admin-Request": "1"})
+                self.assertEqual(result.status_code, expected)
+        self.assertEqual((self.root / "persona.txt").read_text(encoding="utf-8"), "新人设\n")
+
+    async def test_login_rate_limit(self):
+        for _ in range(5):
+            await self.client.post("/admin/api/login", json={"password": "wrong"}, headers={"X-Admin-Request": "1"})
+        self.assertEqual((await self.login()).status_code, 429)
+
+    async def test_page_is_mobile_ready(self):
+        response = await self.client.get("/admin")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("width=device-width", response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    async def test_reply_save_validates_and_updates_runtime(self):
+        import yaml
+        from src.plugins import chat
+        path = self.root / "config.yaml"
+        path.write_text("reply: {}\n", encoding="utf-8")
+        await self.login()
+        with patch.dict(chat.reply_config, {}, clear=False):
+            headers = {"X-Admin-Request": "1"}
+            bad = await self.client.put("/admin/api/reply", json={"max_pending_per_group": 0}, headers=headers)
+            self.assertEqual(bad.status_code, 422)
+            good = await self.client.put("/admin/api/reply", json={"max_pending_per_group": "7"}, headers=headers)
+            self.assertEqual(good.status_code, 200)
+            self.assertEqual(chat.reply_config["max_pending_per_group"], 7)
+            self.assertEqual(yaml.safe_load(path.read_text())["reply"]["max_pending_per_group"], 7)
+
+    async def test_state_does_not_expose_keys(self):
+        await self.login()
+        with patch("src.admin.load_persona", return_value="人设"), \
+             patch("src.admin.load_config", return_value={"deepseek_api_key": "secret"}), \
+             patch("src.admin.qq_online", new_callable=AsyncMock, return_value=True):
+            response = await self.client.get("/admin/api/state")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("secret", response.text)
+
+    async def test_memory_retention_requires_confirmation_and_preserves_records(self):
+        from src.memory import MemoryStore, MemoryService, MemoryConfig
+        service = MemoryService(MemoryStore(self.root/'test.sqlite3'),MemoryConfig(enabled=True))
+        (self.root/'config.yaml').write_text('memory: {}\n', encoding='utf-8')
+        config={'memory':service.config.model_dump()}
+        try:
+            await self.login()
+            with patch('src.memory.get_memory',return_value=service), patch('src.admin.load_config',return_value=config):
+                headers={'X-Admin-Request':'1'}
+                response=await self.client.put('/admin/api/memory',json={'settings':{'max_records':100}},headers=headers)
+                self.assertEqual(response.status_code,409)
+                self.assertTrue(response.json()['confirm_required'])
+                self.assertEqual(service.config.max_records,10000)
+                response=await self.client.put('/admin/api/memory',json={'settings':{'max_records':100},'confirm_retention':True},headers=headers)
+                self.assertEqual(response.status_code,200)
+                self.assertEqual(service.config.max_records,100)
+                response=await self.client.put('/admin/api/memory',json={'settings':{'timezone':'invalid/zone'}},headers=headers)
+                self.assertEqual(response.status_code,422)
+        finally:
+            service.store.db.close()

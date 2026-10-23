@@ -9,6 +9,8 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 
 from src.deepseek_client import deepseek_client
 from src.utils import load_config, load_persona
+from src.memory import get_memory
+from src.token_budget import count_tokens
 
 
 config = load_config()
@@ -23,6 +25,14 @@ user_request_times: dict[tuple[int, int], float] = {}
 model_slots = asyncio.Semaphore(int(reply_config.get("max_concurrent_requests", 3)))
 
 group_chat = on_message(priority=10, block=False)
+
+
+def _memory_safely():
+    try:
+        return get_memory()
+    except Exception as error:
+        logger.warning(f"[memory] 存储不可用，继续短期聊天：{type(error).__name__}")
+        return None
 
 
 def _mention_names(event: GroupMessageEvent) -> dict[str, str]:
@@ -101,22 +111,49 @@ def _context(group_id: int, bot_id: int, current: dict) -> dict:
         if item["sequence"] < current["sequence"]
     ]
     history.sort(key=lambda item: (item["sequence"], item["role"] == "assistant"))
+    memory_context = None
+    memory = _memory_safely()
+    if memory and memory.config.enabled and current.get("memory_record_id"):
+        try:
+            archive_id = current["memory_record_id"]
+            history = memory.store.recent(bot_id, group_id, archive_id, memory.config.recent_records)
+            for item in history:
+                item["content"] = item.get("content", "")[:int(reply_config.get("max_message_chars", 4000))]
+            memory_context = memory.store.context(bot_id, group_id, current.get("content", ""), archive_id, memory.config)
+        except Exception as error:
+            logger.warning(f"[memory] 读取失败，使用短期背景：{type(error).__name__}")
     budget = int(reply_config.get("max_context_chars", 16000))
     retained = []
     used = len(json.dumps(current, ensure_ascii=False))
+    token_budget=int(reply_config.get('max_context_tokens',6000))
+    token_used=count_tokens(json.dumps(current,ensure_ascii=False))
+    if token_used>token_budget:
+        raise ValueError('当前问题超过上下文Token预算')
+    if memory_context:
+        memory_size=count_tokens(json.dumps(memory_context,ensure_ascii=False))
+        if used + len(json.dumps(memory_context, ensure_ascii=False)) <= budget and token_used+memory_size<=token_budget:
+            used += len(json.dumps(memory_context, ensure_ascii=False))
+            token_used+=memory_size
+        else:
+            memory_context = None
     for item in reversed(history):
         size = len(json.dumps(item, ensure_ascii=False))
-        if used + size > budget:
+        token_size=count_tokens(json.dumps(item,ensure_ascii=False))
+        if used + size > budget or token_used+token_size>token_budget:
             break
         retained.append(item)
         used += size
+        token_used+=token_size
     history = list(reversed(retained))
-    return {
+    result = {
         "group_id": group_id,
         "bot_user_id": bot_id,
         "conversation": history,
         "current_request": dict(current),
     }
+    if memory_context:
+        result["memory"] = memory_context
+    return result
 
 
 @group_chat.handle()
@@ -200,6 +237,14 @@ def _record_group_message(event: GroupMessageEvent):
         "reply_to_message_id": getattr(quoted, "message_id", None),
     }
     sessions[group_id].append(current)
+    memory = _memory_safely()
+    if memory and memory.config.enabled:
+        try:
+            raw = {**current, "content": _message_content(event, names)}
+            current["memory_record_id"] = memory.store.add(event.self_id, group_id, raw, memory.config,
+                stamp=getattr(event, "time", None))
+        except Exception as error:
+            logger.warning(f"[memory] 原文保存失败：{type(error).__name__}")
     return text, names, is_at_bot, current
 
 
@@ -261,6 +306,14 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                 "reply_to_user_id": event.user_id,
                 "content": reply_text,
             })
+            memory = _memory_safely()
+            if memory and memory.config.enabled:
+                try:
+                    saved = dict(sessions[group_id][-1])
+                    if saved["message_id"] is not None:
+                        memory.store.add(event.self_id, group_id, saved, memory.config)
+                except Exception as error:
+                    logger.warning(f"[memory] 回复保存失败：{type(error).__name__}")
             # 失败的请求不占用自动回复冷却时间。
             last_reply_time[group_id] = time.monotonic()
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 回复发送成功")
