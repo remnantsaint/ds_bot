@@ -105,7 +105,7 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins import chat
         from test_chat import GroupQueueTests,event
         self.chat=chat;self.event=event;GroupQueueTests.reset()
-        self.policy=patch.dict(chat.reply_config,{'planner_enabled':True,'planner_filter_enabled':True,'planner_interval_seconds':30,'cooldown_seconds':0,'user_cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
+        self.policy=patch.dict(chat.reply_config,{'conversation_window_seconds':0,'planner_enabled':True,'planner_filter_enabled':True,'planner_interval_seconds':30,'cooldown_seconds':0,'user_cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
         self.policy.start();self.bot=SimpleNamespace(send=AsyncMock(return_value={'message_id':900}))
     async def asyncTearDown(self):self.policy.stop()
 

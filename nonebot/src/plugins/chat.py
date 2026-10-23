@@ -28,6 +28,7 @@ user_request_times: dict[tuple[int, int], float] = {}
 model_slots = asyncio.Semaphore(int(reply_config.get("max_concurrent_requests", 3)))
 
 planner_attempts: dict[int, tuple[float,str]] = {}
+conversation_activity: dict[tuple[str,int,int],float] = {}
 
 group_chat = on_message(priority=10, block=False)
 
@@ -169,6 +170,32 @@ def _context(group_id: int, bot_id: int, current: dict, plan=None) -> dict:
     return result
 
 
+def is_followup(event):
+    window=float(reply_config.get('conversation_window_seconds',120))
+    if window<=0:return False
+    # 明确叫别人时，不把“和机器人聊过”当成继续叫机器人的证据。
+    ats=[str(segment.data.get('qq')) for segment in event.message if segment.type=='at']
+    if ats and str(event.self_id) not in ats and not event.is_tome():return False
+    key=(str(event.self_id),event.group_id,event.user_id)
+    now=time.monotonic()
+    for old,last in list(conversation_activity.items()):
+        if now-last>=window:conversation_activity.pop(old,None)
+    if key in conversation_activity:return True
+    memory=_memory_safely()
+    if memory and memory.config.enabled:
+        try:
+            row=memory.store.db.execute("SELECT stamp FROM messages WHERE bot=? AND grp=? AND role='assistant' AND CAST(json_extract(payload,'$.reply_to_user_id') AS TEXT)=? ORDER BY stamp DESC LIMIT 1",
+                (str(event.self_id),str(event.group_id),str(event.user_id))).fetchone()
+            if row:
+                age=time.time()-row[0]
+                if 0<=age<window:
+                    conversation_activity[key]=now-age
+                    return True
+        except Exception:
+            logger.debug('[chat] 连续对话窗口读取失败，按普通消息判断')
+    return False
+
+
 @group_chat.handle()
 async def handle_group_message(bot: Bot, event: GroupMessageEvent):
     await dispatch_saved(bot,event)
@@ -197,10 +224,11 @@ async def process_group_message(bot: Bot, event: GroupMessageEvent):
         for seg in event.message)
     if event.user_id == event.self_id:
         return
+    followup=is_followup(event)
     record = _record_group_message(event)
     if record is None:
         return
-    if explicitly_at and reply_config.get("reply_on_at", True):
+    if (explicitly_at and reply_config.get("reply_on_at", True)) or followup:
         now = time.monotonic()
         cooldown = float(reply_config.get("user_cooldown_seconds", 3))
         key = (group_id, event.user_id)
@@ -210,14 +238,14 @@ async def process_group_message(bot: Bot, event: GroupMessageEvent):
         for stale in [k for k, timestamp in user_request_times.items() if now - timestamp >= cooldown]:
             user_request_times.pop(stale, None)
     if pending_requests[group_id] >= int(reply_config.get("max_pending_per_group", 5)):
-        if explicitly_at:
+        if explicitly_at or followup:
             try:
                 await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
                     + MessageSegment.text("当前提问较多，请稍后再试。")), timeout=10)
             except Exception:
                 logger.warning("[chat] 排队已满提示发送失败")
         return
-    if explicitly_at and reply_config.get("reply_on_at", True):
+    if (explicitly_at and reply_config.get("reply_on_at", True)) or followup:
         user_request_times[key] = now
     pending_requests[group_id] += 1
     try:
@@ -286,9 +314,10 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
     group_id = event.group_id
 
     at_trigger = is_at_bot and reply_config.get("reply_on_at", True)
+    followup = is_followup(event)
     lock = group_locks[group_id]
     # 普通消息仍记作背景；只有明确 @ 的请求在忙碌时排队。
-    if not at_trigger and lock.locked():
+    if not (at_trigger or followup) and lock.locked():
         logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id}：忙碌中，仅记录背景")
         return
 
@@ -297,7 +326,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
     )
     probability = float(reply_config.get("probability", 0))
     planner_enabled=bool(reply_config.get('planner_enabled',False))
-    if not (at_trigger or keyword_trigger or planner_enabled
+    if not (at_trigger or followup or keyword_trigger or planner_enabled
             or (probability > 0 and random.random() < probability)):
         return
 
@@ -306,7 +335,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
 
     # Lock 按等待顺序处理同群请求；不同群使用不同的锁。
     async with lock:
-        if not at_trigger:
+        if not (at_trigger or followup):
             elapsed = time.monotonic() - last_reply_time.get(group_id, float("-inf"))
             if elapsed < float(reply_config["cooldown_seconds"]):
                 logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id}：自动回复冷却中")
@@ -315,7 +344,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
         try:
             plan=None
             if planner_enabled:
-                forced=bool(at_trigger or keyword_trigger)
+                forced=bool(at_trigger or keyword_trigger or followup)
                 if not forced:
                     filtering=bool(reply_config.get('planner_filter_enabled',True))
                     if filtering and not basic_candidate(text):return
@@ -335,6 +364,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                     async with model_slots:
                         plan,_,usage=await decide(deepseek_client,current,history,reply_config,forced)
                     logger.info(f'[planner] 回复={plan.should_reply} 检索={plan.needs_memory} Token={usage.get("total_tokens",0)}')
+                    if forced:plan.should_reply=True
                     if not plan.should_reply:return
                 except Exception as error:
                     logger.warning(f'[planner] 判断失败：{type(error).__name__}')
@@ -380,6 +410,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                     logger.warning(f"[memory] 回复保存失败：{type(error).__name__}")
             # 失败的请求不占用自动回复冷却时间。
             last_reply_time[group_id] = time.monotonic()
+            conversation_activity[(str(event.self_id),group_id,event.user_id)]=time.monotonic()
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 回复发送成功")
         except Exception as error:
             status = getattr(error, "status_code", None)
@@ -391,7 +422,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
             import nonebot
             if get_inbox() and str(bot.self_id) not in nonebot.get_bots():
                 raise
-            if at_trigger:
+            if at_trigger or followup:
                 try:
                     await bot.send(
                         event, MessageSegment.reply(event.message_id)

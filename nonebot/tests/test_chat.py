@@ -110,6 +110,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(chat.pending_requests)
 
     async def test_user_cooldown_blocks_repeated_request(self):
+        chat.conversation_activity.clear()
         chat.planner_attempts.clear()
         chat.user_request_times.clear()
         try:
@@ -119,7 +120,8 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
                 await chat.handle_group_message(self.bot, event(711))
                 self.assertEqual(model.await_count, 1)
         finally:
-            chat.planner_attempts.clear()
+            chat.conversation_activity.clear()
+        chat.planner_attempts.clear()
         chat.user_request_times.clear()
 
     def test_context_budget_removes_oversized_history(self):
@@ -158,7 +160,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.reset()
         self.policy = patch.dict(chat.reply_config, {
-            "planner_enabled": False, "probability": 0, "keywords": ["大肥鱼"],
+            "conversation_window_seconds":0,"planner_enabled": False, "probability": 0, "keywords": ["大肥鱼"],
             "user_cooldown_seconds": 0,
             "reply_on_at": True, "cooldown_seconds": 300, "max_history": 20,
             "delay_min_seconds": 0, "delay_max_seconds": 0,
@@ -169,6 +171,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def reset():
+        chat.conversation_activity.clear()
         chat.planner_attempts.clear()
         chat.user_request_times.clear()
         chat.sessions.clear()

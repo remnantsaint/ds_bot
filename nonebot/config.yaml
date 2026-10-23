@@ -20,6 +20,7 @@ memory:
   context_chars: 4000
   verify_on_challenge: true
 reply:
+  conversation_window_seconds: 120
   planner_enabled: true
   planner_filter_enabled: false
   planner_interval_seconds: 0

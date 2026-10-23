@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ReplyLimits(BaseModel):
+    conversation_window_seconds: float = Field(default=120,ge=0,le=1800)
     planner_enabled: bool = False
     planner_filter_enabled: bool = True
     planner_interval_seconds: float = Field(default=30,ge=0,le=3600)

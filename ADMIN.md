@@ -60,3 +60,5 @@ docker compose exec -T -e MEMORY_ENABLED=false nonebot python -m unittest discov
 回复设置新增“启用精简接话与记忆判断”开关及判断间隔、近期条数、当前消息字符量、内容Token预算、超时。保存后即时生效。普通消息依旧受自动回复冷却控制；若要更频繁接话，可调整该冷却，但会增加API用量。
 
 更新前先在Compose环境执行 `docker compose exec -T nonebot python -m src.update_tool`，待其提示Ready to restart后再重启应用容器，NapCat保持运行。更新间隙消息会先保存并在重连后尝试恢复；重复消息按QQ消息编号去重。详见MEMORY.md中的恢复范围和发送不确定状态。
+
+回复设置新增“连续对话窗口（秒，0关闭）”，默认120秒。机器人回复过你的同群后续消息会在窗口内优先接话，成功回复会续期；其他人的消息仍按普通规则判断。

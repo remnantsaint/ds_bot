@@ -162,7 +162,7 @@ def install_admin(app, root=None, password=None):
     async def reply(data: dict, request: Request):
         auth(request)
         # 只开放可即时生效的数字参数；不修改全局并发对象或历史容器大小。
-        allowed = {"cooldown_seconds", "user_cooldown_seconds", "delay_min_seconds",
+        allowed = {"conversation_window_seconds","cooldown_seconds", "user_cooldown_seconds", "delay_min_seconds",
                    "delay_max_seconds", "max_pending_per_group", "request_timeout_seconds",
                    "planner_enabled","planner_filter_enabled","planner_interval_seconds","planner_recent_records","planner_message_chars",
                    "planner_input_tokens","planner_timeout_seconds"}
