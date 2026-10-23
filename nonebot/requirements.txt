@@ -1,0 +1,9 @@
+# 已在 Python 3.11 环境验证的直接依赖；传递依赖未完整锁定。
+# pyproject.toml 保存项目依赖范围，修改依赖时需同时维护。
+nb-cli==1.7.4
+nonebot2[fastapi]==2.5.0
+nonebot-adapter-onebot==2.4.6
+openai==3.37.0
+PyYAML==6.0.3
+httpx==0.28.1
+tzdata==2026.5

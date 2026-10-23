@@ -1,0 +1,44 @@
+services:
+  nonebot:
+    image: ds-bot-nonebot:local
+    build:
+      context: ./nonebot
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ./nonebot/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+    # 服务代码与配置只读挂载，方便直接开发；密钥和人设不会打入镜像。
+    volumes:
+      - ./nonebot:/app:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    restart: unless-stopped
+    depends_on:
+      nonebot:
+        condition: service_healthy
+    entrypoint: ["bash", "/opt/ds-bot/start.sh"]
+    command: []
+    environment:
+      MODE: reverse_ws
+      ONEBOT_URL: ws://nonebot:8080/onebot/v11/ws
+    ports:
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - ./napcat/data/qq:/app/.config/QQ
+      - ./napcat/data/config:/app/napcat/config
+      - ./napcat/data/plugins:/app/napcat/plugins
+      - ./napcat/start.sh:/opt/ds-bot/start.sh:ro
+      - ./napcat/configure.py:/opt/ds-bot/configure.py:ro

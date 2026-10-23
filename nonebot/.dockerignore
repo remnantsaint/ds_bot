@@ -1,0 +1,9 @@
+# 仅发送构建所需的代码和依赖声明，排除密钥、人设、QQ 数据和测试缓存。
+**
+!requirements.txt
+!pyproject.toml
+!bot.py
+!src/
+!src/**
+src/**/__pycache__/
+src/**/*.pyc

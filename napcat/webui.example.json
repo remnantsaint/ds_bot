@@ -1,0 +1,7 @@
+{
+  "host": "0.0.0.0",
+  "port": 6099,
+  "prefix": "",
+  "token": "replace_with_your_webui_token",
+  "loginRate": 3
+}
