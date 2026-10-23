@@ -1,5 +1,9 @@
 # ds_bot
 
+新增 [可调整的持久记忆工具](MEMORY.md)：每群最多保留10,000条原文，每日摘要、默认每10天合并去重，被质疑时检索原文。参数可在管理后台调整，原文从启用后开始积累，不导入过去记录。
+
+新增手机和电脑通用的 [NoneBot 管理后台](ADMIN.md)：启动后访问 `http://127.0.0.1:8088/admin`，使用独立的 `ADMIN_PASSWORD` 登录，可管理人设、常用回复参数并查看在线状态。局域网与服务器部署方式见该文档。
+
 基于 **NoneBot2 + NapCat + DeepSeek API** 的 QQ 群聊天机器人，支持人设、按群隔离的短期上下文，以及模型自动决定的联网搜索和网页抓取。
 
 **默认部署为两个 Docker 容器**：NoneBot 处理聊天业务，NapCat 登录 QQ。Compose 通过服务名连接它们，宿主机无需安装 Python 或 Conda。当前在 Linux 上验证，Windows 可使用 Docker Desktop 的 Linux 容器模式；本项目不需要 Docker Desktop 的 host networking 功能。
@@ -16,11 +20,11 @@ QQ 群 ↔ NapCat 容器 ↔ ws://nonebot:8080/onebot/v11/ws ↔ NoneBot 容器 
 - 未 @：仅按关键词触发，受冷却限制；概率随机回复默认关闭（`reply.probability: 0`），忙碌时只记录为本群背景。
 - 消息中的 @ 群友按原位置保留昵称和 QQ 号，优先使用本群名片、其次昵称，查询失败时保留 QQ 号，避免丢失提问对象。
 - 不同群分别记录上下文，同群成员共享本群背景，并标记发言人、消息和回复对象。
-- 默认保留每群最近 20 条记录，群友消息和机器人成功回复都计数；重启 NoneBot 后清空。
+- 短期缓存默认保留每群最近20条记录，群友消息和机器人成功回复均计数；启用持久记忆后原文和摘要另存SQLite，重启不会丢失。
 - 模型自行决定是否搜索，默认每次回复最多搜索一次；程序不追加固定来源尾注。
 - 可打开用户提供或搜索找到的公开网页，默认每次回复最多抓取 2 次，每页向模型提供最多 6000 字符正文。
 - 异常 DSML 工具标记会拦截并重试一次，不作为回答发送，也不保存进群聊历史。
-- 尚未实现识图、知识库、持久化记忆、每日摘要或七天历史检索。
+- 尚未实现识图和知识库；持久记忆、每日摘要和原文检索见 MEMORY.md。
 
 ## 目录
 
@@ -98,7 +102,7 @@ if (!(Test-Path napcat/data/config/webui.json)) { Copy-Item napcat/webui.example
 
 `persona_file` 相对于 `config.yaml` 所在目录解析；宿主机绝对路径不一定存在于容器中。
 
-Compose 会把 NoneBot 的监听地址覆盖为容器内的 `0.0.0.0:8080`，但不将 8080 发布到宿主机；`.env` 的 `127.0.0.1` 仍可留给宿主机开发使用。NapCat WebUI 在容器内监听 `0.0.0.0:6099`，只映射到宿主机的 `127.0.0.1:6099`。
+Compose 会把 NoneBot 的监听地址覆盖为容器内的 `0.0.0.0:8080`，默认通过宿主机 127.0.0.1:8088 映射到容器8080，供管理后台访问；`.env` 的 `127.0.0.1` 仍可留给宿主机开发使用。NapCat WebUI 在容器内监听 `0.0.0.0:6099`，只映射到宿主机的 `127.0.0.1:6099`。
 
 ### 4. 构建并启动两个容器
 
@@ -159,13 +163,23 @@ QQ 登录数据不删除，但重建容器后可能需要重新扫码。NoneBot 
 
 ## 日常使用和开发
 
+### 修改人设无需重启
+
+直接编辑并保存 `nonebot/persona.txt`，下一次生成回答会自动读取最新内容，无需重启容器。正在生成的回答继续使用该轮开始时读取的人设。
+若文件为空、被删除或不是有效 UTF-8，该轮回答失败，不会使用空人设或旧人设；修好文件后下一次请求自动恢复。
+直接编辑 `config.yaml`（包括更换 `persona_file` 路径）仍需重启；后台支持的回复和记忆参数保存即生效；人设变化不会清空已有群聊历史。
+
+验证方法：备份原人设，将回答前缀临时设为“苹果测试：”，保存并在群里 @机器人；再改成“香蕉测试：”，保存后等至少 3 秒重新提问，确认前缀变化。完成后恢复原人设。
+
+本次涉及 `nonebot/src/utils.py`（独立读取人设）、`nonebot/src/plugins/chat.py`（每轮调用模型前加载）、`nonebot/tests/test_config.py` 和 `nonebot/tests/test_chat.py`（文件更新、异常恢复及聊天调用测试），并同步更新两份 README。87 项离线测试通过，群聊手动验证通过。
+
 在仓库根目录执行：
 
 ```bash
 # 查看输出，退出查看不停止服务
 docker compose logs -f --tail=100 nonebot
 
-# 代码、YAML 或人设修改后重启 NoneBot
+# 代码或 YAML 修改后重启 NoneBot（人设保存即生效）
 docker compose restart nonebot
 
 # requirements.txt 改动后，重新构建并创建 NoneBot 容器
@@ -182,7 +196,7 @@ docker compose up -d
 
 两个容器都有 `restart: unless-stopped`。Docker 服务启动时会按该策略恢复未被手动停止的容器，主机 Docker 服务也需启用自启动。QQ 会话仍可能要求重新登录。
 
-默认运行时只读挂载 `nonebot/`，因此在服务器或 VS Code 里修改代码后重启即可生效；依赖变更需要重建镜像。需要在前台查看并控制两个服务，可以用 `docker compose up`，按 `Ctrl+C` 停止。
+默认运行时可写挂载 `nonebot/`（供管理后台原子保存配置），因此在服务器或 VS Code 里修改代码后重启即可生效；依赖变更需要重建镜像。需要在前台查看并控制两个服务，可以用 `docker compose up`，按 `Ctrl+C` 停止。
 
 `run.sh` 和 `nb run` 仍保留作宿主机开发入口，需要自己安装 Python 依赖。默认 NapCat 会连接容器内的 NoneBot；它不会因为你另开一个宿主机 `nb run` 就切换目标，详见 [NoneBot 说明](nonebot/README.md)。
 
@@ -219,12 +233,12 @@ fetch:
 
 日志中的 `[search] 联网搜索完成` 和 `[fetch] 网页抓取完成` 可用于确认实际调用。`[tools] 检测到正文工具标记` 表示触发了异常恢复；重复异常会返回失败提示，不会将标签原样发送。没有固定“来源”尾注。
 
-本次容器化没有加入长期记忆或每日摘要任务，也不会自动产生摘要模型调用。20 条限制控制当前短期上下文；七天原始记录、每日摘要和旧事检索仍是后续功能。
+启用持久记忆后会产生独立的摘要模型调用。20条限制仍用于短期缓存，数据库原文保留、每日摘要和周期整理按 memory 设置执行，详见 MEMORY.md。
 
 构建后可运行 NoneBot 离线测试：
 
 ```bash
-docker compose run --rm --no-deps nonebot python -m unittest discover -s tests -v
+docker compose run --rm --no-deps -e MEMORY_ENABLED=false nonebot python -m unittest discover -s tests -v
 ```
 
 配置迁移脚本只依赖 Python 标准库，在开发机可执行 `python -m unittest discover -s napcat/tests -v`。两套测试不请求真实 API、不发送 QQ 消息；QQ 端到端连通性需扫码后发消息验证。
@@ -234,3 +248,5 @@ docker compose run --rm --no-deps nonebot python -m unittest discover -s tests -
 代码、Dockerfile、Compose、入口脚本、README、测试、默认 `config.yaml` / `persona.txt`、仅含日志级别的 `.env.dev` / `.env.prod` 和密钥模板可以提交。真实 `.env`、NapCat 数据、日志和缓存不提交；运行配置和人设也不打入 NoneBot 镜像。新增私有文件需自行维护 `.gitignore`，提交前查看 `git diff --cached`，不要将密钥放进参与版本管理的普通配置中。
 
 DEBUG 日志可能包含环境变量，分享前遮盖密钥。本仓库尚未选择自有代码的许可证。NapCat / QQ 从上游镜像获取，遵循上游自己的许可证及限制，参见 [第三方说明](napcat/README.md#上游)。
+
+精简接话：可在管理后台启用“精简接话与记忆判断”，先本地过滤，再用少量近期片段判断是否回复及需要哪些记忆，减少默认上传历史摘要。配置、费用边界和验证见 [MEMORY.md](MEMORY.md)。

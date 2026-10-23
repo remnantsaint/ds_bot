@@ -1,13 +1,19 @@
+from src.memory_privacy import redact
 import asyncio
 import random
 import time
+import json
+import hashlib
 from collections import defaultdict, deque
 
 from nonebot import logger, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 
 from src.deepseek_client import deepseek_client
-from src.utils import load_config
+from src.utils import load_config, load_persona
+from src.memory import get_memory
+from src.token_budget import count_tokens
+from src.reply_planner import decide, basic_candidate, compact, select_memory
 
 
 config = load_config()
@@ -17,8 +23,22 @@ sessions = defaultdict(lambda: deque(maxlen=int(reply_config["max_history"])))
 last_reply_time: dict[int, float] = {}
 group_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 group_sequences: dict[int, int] = defaultdict(int)
+pending_requests: dict[int, int] = defaultdict(int)
+user_request_times: dict[tuple[int, int], float] = {}
+model_slots = asyncio.Semaphore(int(reply_config.get("max_concurrent_requests", 3)))
+
+planner_attempts: dict[int, tuple[float,str]] = {}
+conversation_activity: dict[tuple[str,int,int],float] = {}
 
 group_chat = on_message(priority=10, block=False)
+
+
+def _memory_safely():
+    try:
+        return get_memory()
+    except Exception as error:
+        logger.warning(f"[memory] 存储不可用，继续短期聊天：{type(error).__name__}")
+        return None
 
 
 def _mention_names(event: GroupMessageEvent) -> dict[str, str]:
@@ -49,7 +69,7 @@ def _message_content(event: GroupMessageEvent, names: dict[str, str]) -> str:
             elif user_id.isdecimal():
                 name = " ".join(str(names.get(user_id, "")).split())[:80]
                 parts.append(f"@{name}（QQ:{user_id}）" if name else f"@QQ:{user_id}")
-    return "".join(parts).strip()
+    return redact("".join(parts).strip())
 
 
 def _mentioned_people(event: GroupMessageEvent, names: dict[str, str]) -> list[dict]:
@@ -83,24 +103,169 @@ async def _resolve_mention_names(bot: Bot, event: GroupMessageEvent, names: dict
             logger.debug(f"[chat] 群 {event.group_id} @对象名称查询失败：{type(error).__name__}，保留QQ号")
 
 
-def _context(group_id: int, bot_id: int, current: dict) -> dict:
+def _context(group_id: int, bot_id: int, current: dict, plan=None) -> dict:
     # 排队期间可能又收到消息，只取当前提问之前的本群记录。
     # assistant 的 sequence 对应它回答的问题，而非回答发送的时间。
+    current = dict(current)
+    budget = int(reply_config.get("max_context_chars", 16000))
+    # 身份及提及信息同样计入预算；过大的请求明确拒绝，不静默改变对象。
+    current_size = len(json.dumps(current, ensure_ascii=False))
+    if current_size > budget:
+        raise ValueError("当前请求超过上下文预算，请缩短消息或减少提及成员")
     history = [
         dict(item) for item in sessions[group_id]
         if item["sequence"] < current["sequence"]
     ]
     history.sort(key=lambda item: (item["sequence"], item["role"] == "assistant"))
-    return {
+    memory_context = None
+    memory = _memory_safely()
+    if memory and memory.config.enabled and current.get("memory_record_id"):
+        try:
+            archive_id = current["memory_record_id"]
+            history = memory.store.recent(bot_id, group_id, archive_id, memory.config.recent_records)
+            for item in history:
+                item["content"] = item.get("content", "")[:int(reply_config.get("max_message_chars", 4000))]
+            if plan is None:
+                memory_context = memory.store.context(bot_id, group_id, current.get("content", ""), archive_id, memory.config)
+            elif plan.needs_memory:
+                memory_context = select_memory(memory.store,bot_id,group_id,archive_id,plan,memory.config)
+        except Exception as error:
+            logger.warning(f"[memory] 读取失败，使用短期背景：{type(error).__name__}")
+    if plan is not None:
+        history=[compact(row) for row in history[-int(reply_config.get('planner_recent_records',4)):]]
+    budget = int(reply_config.get("max_context_chars", 16000))
+    retained = []
+    used = len(json.dumps(current, ensure_ascii=False))
+    token_budget=int(reply_config.get('max_context_tokens',6000))
+    token_used=count_tokens(json.dumps(current,ensure_ascii=False))
+    if token_used>token_budget:
+        raise ValueError('当前问题超过上下文Token预算')
+    if memory_context:
+        memory_size=count_tokens(json.dumps(memory_context,ensure_ascii=False))
+        if used + len(json.dumps(memory_context, ensure_ascii=False)) <= budget and token_used+memory_size<=token_budget:
+            used += len(json.dumps(memory_context, ensure_ascii=False))
+            token_used+=memory_size
+        else:
+            memory_context = None
+    for item in reversed(history):
+        size = len(json.dumps(item, ensure_ascii=False))
+        token_size=count_tokens(json.dumps(item,ensure_ascii=False))
+        if used + size > budget or token_used+token_size>token_budget:
+            break
+        retained.append(item)
+        used += size
+        token_used+=token_size
+    history = list(reversed(retained))
+    result = {
         "group_id": group_id,
         "bot_user_id": bot_id,
         "conversation": history,
         "current_request": dict(current),
     }
+    if plan is not None:
+        result['memory_search_allowed']=plan.needs_memory
+        result['memory_plan']=plan.model_dump()
+    if memory_context:
+        result["memory"] = memory_context
+    return result
+
+
+def is_followup(event):
+    window=float(reply_config.get('conversation_window_seconds',120))
+    if window<=0:return False
+    # 明确叫别人时，不把“和机器人聊过”当成继续叫机器人的证据。
+    ats=[str(segment.data.get('qq')) for segment in event.message if segment.type=='at']
+    if ats and str(event.self_id) not in ats and not event.is_tome():return False
+    key=(str(event.self_id),event.group_id,event.user_id)
+    now=time.monotonic()
+    for old,last in list(conversation_activity.items()):
+        if now-last>=window:conversation_activity.pop(old,None)
+    if key in conversation_activity:return True
+    memory=_memory_safely()
+    if memory and memory.config.enabled:
+        try:
+            row=memory.store.db.execute("SELECT stamp FROM messages WHERE bot=? AND grp=? AND role='assistant' AND CAST(json_extract(payload,'$.reply_to_user_id') AS TEXT)=? ORDER BY stamp DESC LIMIT 1",
+                (str(event.self_id),str(event.group_id),str(event.user_id))).fetchone()
+            if row:
+                age=time.time()-row[0]
+                if 0<=age<window:
+                    conversation_activity[key]=now-age
+                    return True
+        except Exception:
+            logger.debug('[chat] 连续对话窗口读取失败，按普通消息判断')
+    return False
 
 
 @group_chat.handle()
 async def handle_group_message(bot: Bot, event: GroupMessageEvent):
+    await dispatch_saved(bot,event)
+
+
+async def dispatch_saved(bot,event,replay=False):
+    from src import message_recovery as recovery
+    store=recovery.get_inbox()
+    if not store or event.user_id==event.self_id:
+        return await process_group_message(bot,event)
+    key=store.capture(bot.self_id,event.model_dump(mode='json'))
+    if recovery.maintenance or (str(bot.self_id) in recovery.recovering and not replay):return
+    if not store.claim(key):return
+    try:
+        await process_group_message(bot,event)
+    except BaseException:
+        store.finish(key,interrupted=True)
+        raise
+    else:store.finish(key)
+
+
+async def process_group_message(bot: Bot, event: GroupMessageEvent):
+    group_id = event.group_id
+    explicitly_at = event.is_tome() or any(
+        seg.type == "at" and str(seg.data.get("qq")) == str(event.self_id)
+        for seg in event.message)
+    if event.user_id == event.self_id:
+        return
+    followup=is_followup(event)
+    record = _record_group_message(event)
+    if record is None:
+        return
+    if (explicitly_at and reply_config.get("reply_on_at", True)) or followup:
+        now = time.monotonic()
+        cooldown = float(reply_config.get("user_cooldown_seconds", 3))
+        key = (group_id, event.user_id)
+        if now - user_request_times.get(key, float("-inf")) < cooldown:
+            return
+        # 清理过期记录，避免按用户永久增长。
+        for stale in [k for k, timestamp in user_request_times.items() if now - timestamp >= cooldown]:
+            user_request_times.pop(stale, None)
+    if pending_requests[group_id] >= int(reply_config.get("max_pending_per_group", 5)):
+        if explicitly_at or followup:
+            try:
+                await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
+                    + MessageSegment.text("当前提问较多，请稍后再试。")), timeout=10)
+            except Exception:
+                logger.warning("[chat] 排队已满提示发送失败")
+        return
+    if (explicitly_at and reply_config.get("reply_on_at", True)) or followup:
+        user_request_times[key] = now
+    pending_requests[group_id] += 1
+    try:
+        await asyncio.wait_for(_handle_group_message(bot, event, record),
+            timeout=float(reply_config.get("request_timeout_seconds", 180)))
+    except asyncio.TimeoutError:
+        logger.warning(f"[chat] 群 {group_id} 请求总超时，已释放队列")
+        if event.is_tome():
+            try:
+                await asyncio.wait_for(bot.send(event, MessageSegment.reply(event.message_id)
+                    + MessageSegment.text("这条提问等待超时了，请稍后重试。")), timeout=10)
+            except Exception:
+                logger.warning("[chat] 超时提示发送失败")
+    finally:
+        pending_requests[group_id] -= 1
+        if pending_requests[group_id] == 0:
+            pending_requests.pop(group_id, None)
+
+
+def _record_group_message(event: GroupMessageEvent):
     if event.user_id == event.self_id:
         return
 
@@ -126,18 +291,33 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         "message_id": event.message_id,
         "user_id": event.user_id,
         "nickname": event.sender.card or event.sender.nickname or "群友",
-        "content": _message_content(event, names),
+        "content": _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))],
         "mentions_bot": is_at_bot,
         "mentioned_user_ids": mentioned_users,
         "mentioned_users": _mentioned_people(event, names),
         "reply_to_message_id": getattr(quoted, "message_id", None),
     }
     sessions[group_id].append(current)
+    memory = _memory_safely()
+    if memory and memory.config.enabled:
+        try:
+            raw = {**current, "content": _message_content(event, names)}
+            current["memory_record_id"] = memory.store.add(event.self_id, group_id, raw, memory.config,
+                stamp=getattr(event, "time", None))
+        except Exception as error:
+            logger.warning(f"[memory] 原文保存失败：{type(error).__name__}")
+    return text, names, is_at_bot, current
+
+
+async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
+    text, names, is_at_bot, current = record
+    group_id = event.group_id
 
     at_trigger = is_at_bot and reply_config.get("reply_on_at", True)
+    followup = is_followup(event)
     lock = group_locks[group_id]
     # 普通消息仍记作背景；只有明确 @ 的请求在忙碌时排队。
-    if not at_trigger and lock.locked():
+    if not (at_trigger or followup) and lock.locked():
         logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id}：忙碌中，仅记录背景")
         return
 
@@ -145,7 +325,8 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
         keyword and keyword in text for keyword in reply_config.get("keywords", [])
     )
     probability = float(reply_config.get("probability", 0))
-    if not (at_trigger or keyword_trigger
+    planner_enabled=bool(reply_config.get('planner_enabled',False))
+    if not (at_trigger or followup or keyword_trigger or planner_enabled
             or (probability > 0 and random.random() < probability)):
         return
 
@@ -154,20 +335,49 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
 
     # Lock 按等待顺序处理同群请求；不同群使用不同的锁。
     async with lock:
-        if not at_trigger:
+        if not (at_trigger or followup):
             elapsed = time.monotonic() - last_reply_time.get(group_id, float("-inf"))
             if elapsed < float(reply_config["cooldown_seconds"]):
                 logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id}：自动回复冷却中")
                 return
 
-        messages = [{"role": "system", "content": config["persona"]}]
         try:
+            plan=None
+            if planner_enabled:
+                forced=bool(at_trigger or keyword_trigger or followup)
+                if not forced:
+                    filtering=bool(reply_config.get('planner_filter_enabled',True))
+                    if filtering and not basic_candidate(text):return
+                    fingerprint=hashlib.sha256(redact(text).encode()).hexdigest()
+                    previous=planner_attempts.get(group_id)
+                    if previous and (time.monotonic()-previous[0]<float(reply_config.get('planner_interval_seconds',30)) or (filtering and previous[1]==fingerprint)):return
+                    # 有界清理：失败也计入间隔，防止接口故障时连续扣费。
+                    for key,value in list(planner_attempts.items()):
+                        if time.monotonic()-value[0]>3600:planner_attempts.pop(key,None)
+                    planner_attempts[group_id]=(time.monotonic(),fingerprint)
+                history=[row for row in sessions[group_id] if row['sequence']<current['sequence']]
+                memory=_memory_safely()
+                if memory and memory.config.enabled and current.get('memory_record_id'):
+                    try:history=memory.store.recent(event.self_id,group_id,current['memory_record_id'],int(reply_config.get('planner_recent_records',4)))
+                    except Exception:pass
+                try:
+                    async with model_slots:
+                        plan,_,usage=await decide(deepseek_client,current,history,reply_config,forced)
+                    logger.info(f'[planner] 回复={plan.should_reply} 检索={plan.needs_memory} Token={usage.get("total_tokens",0)}')
+                    if forced:plan.should_reply=True
+                    if not plan.should_reply:return
+                except Exception as error:
+                    logger.warning(f'[planner] 判断失败：{type(error).__name__}')
+                    if not forced:return
+                    # 明确提问不因判断失败丢失，保留旧回复与检索方式。
             await _resolve_mention_names(bot, event, names)
-            current["content"] = _message_content(event, names)
+            current["content"] = _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))]
             current["mentioned_users"] = _mentioned_people(event, names)
-            context = _context(group_id, event.self_id, current)
+            context = _context(group_id, event.self_id, current,plan)
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 用户 {event.user_id} 开始调用 DeepSeek")
-            reply_text = await deepseek_client.chat(messages, context=context)
+            async with model_slots:
+                messages = [{"role": "system", "content": load_persona(config)}]
+                reply_text = await deepseek_client.chat(messages, context=context)
             # 在同群锁内延迟发送，不收集或合并期间收到的其他提问。
             delay = random.uniform(
                 float(reply_config.get("delay_min_seconds", 1)),
@@ -176,7 +386,10 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
             logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id} 发送前等待 {delay:.2f} 秒")
             await asyncio.sleep(delay)
             message = MessageSegment.reply(event.message_id) + MessageSegment.text(reply_text)
+            from src.message_recovery import mark_sending,mark_sent
+            mark_sending(bot,event)
             sent = await bot.send(event, message)
+            mark_sent(bot,event)
             sessions[group_id].append({
                 "role": "assistant",
                 "group_id": group_id,
@@ -187,8 +400,17 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
                 "reply_to_user_id": event.user_id,
                 "content": reply_text,
             })
+            memory = _memory_safely()
+            if memory and memory.config.enabled:
+                try:
+                    saved = dict(sessions[group_id][-1])
+                    if saved["message_id"] is not None:
+                        memory.store.add(event.self_id, group_id, saved, memory.config)
+                except Exception as error:
+                    logger.warning(f"[memory] 回复保存失败：{type(error).__name__}")
             # 失败的请求不占用自动回复冷却时间。
             last_reply_time[group_id] = time.monotonic()
+            conversation_activity[(str(event.self_id),group_id,event.user_id)]=time.monotonic()
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 回复发送成功")
         except Exception as error:
             status = getattr(error, "status_code", None)
@@ -196,7 +418,11 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
                 f"[chat] 群 {group_id} 消息 {event.message_id} 回复失败："
                 f"{type(error).__name__}，HTTP状态={status}"
             )
-            if at_trigger:
+            from src.message_recovery import get_inbox
+            import nonebot
+            if get_inbox() and str(bot.self_id) not in nonebot.get_bots():
+                raise
+            if at_trigger or followup:
                 try:
                     await bot.send(
                         event, MessageSegment.reply(event.message_id)
