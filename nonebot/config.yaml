@@ -20,20 +20,26 @@ memory:
   context_chars: 4000
   verify_on_challenge: true
 reply:
+  planner_enabled: true
+  planner_interval_seconds: 30
+  planner_recent_records: 4
+  planner_message_chars: 500
+  planner_input_tokens: 1000
+  planner_timeout_seconds: 12
   keywords:
   - 大肥鱼
   probability: 0
   reply_on_at: true
-  cooldown_seconds: 300
+  cooldown_seconds: 60.0
   max_history: 20
   max_pending_per_group: 5
   max_concurrent_requests: 3
-  request_timeout_seconds: 180
+  request_timeout_seconds: 180.0
   max_message_chars: 4000
   max_context_chars: 16000
-  user_cooldown_seconds: 3
-  delay_min_seconds: 1
-  delay_max_seconds: 4
+  user_cooldown_seconds: 3.0
+  delay_min_seconds: 1.0
+  delay_max_seconds: 4.0
 search:
   enabled: true
   max_results: 3

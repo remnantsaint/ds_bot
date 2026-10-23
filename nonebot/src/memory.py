@@ -80,7 +80,13 @@ def search_for_model(service, context, arguments, budget, token_budget=None):
     current = context['current_request']
     if not current.get('memory_record_id'):
         raise ValueError('missing memory boundary')
-    rows = service.store.search(context['bot_user_id'],context['group_id'],args['query'],
+    selected=None
+    if context.get('memory_plan'):
+        from src.reply_planner import ReplyPlan,select_memory
+        plan=ReplyPlan.model_validate(context['memory_plan'])
+        plan.query=args['query']
+        selected=select_memory(service.store,context['bot_user_id'],context['group_id'],current['memory_record_id'],plan,service.config)
+    rows = selected['evidence'] if selected is not None else service.store.search(context['bot_user_id'],context['group_id'],args['query'],
                                 before_id=current['memory_record_id'],limit=4)
     results, used, token_used = [], 0, 0
     token_budget=service.config.tool_result_tokens if token_budget is None else token_budget
@@ -97,8 +103,8 @@ def search_for_model(service, context, arguments, budget, token_budget=None):
         token_used += token_size
     facts=[]
     if service.config.facts_enabled:
-        for fact in service.store.facts_for_query(context['bot_user_id'],context['group_id'],args['query'],
-                current['memory_record_id'],service.config.fact_context_count):
+        for fact in (selected['facts'] if selected is not None else service.store.facts_for_query(context['bot_user_id'],context['group_id'],args['query'],
+                current['memory_record_id'],service.config.fact_context_count)):
             size=len(pack(fact))
             token_size=count_tokens(pack(fact))
             if used+size<=budget and token_used+token_size<=token_budget:
@@ -258,22 +264,33 @@ class MemoryStore:
         self.db.execute('''INSERT OR REPLACE INTO summaries VALUES (?,?,?,?,?,?,?,?)''',
             (str(bot), str(group), kind, key, redact(text), fingerprint, pack(usage), datetime.now().timestamp()))
 
-    def search(self, bot, group, query, before_id=None, limit=8):
+    def search(self, bot, group, query, before_id=None, limit=8, *, subject_user_id=None, date_from=None, date_to=None):
         # SQLite 本地全文扫描；中文以词串和二字片段匹配，不需向量模型。
         terms = query_terms(query)
         if not terms:
             return []
         scope = (str(bot), str(group), before_id or 2**63-1)
+        filters=''
+        parameters=[]
+        if subject_user_id:
+            filters+=" AND (CAST(json_extract(payload,'$.user_id') AS TEXT)=? OR EXISTS (SELECT 1 FROM json_each(payload,'$.mentioned_user_ids') WHERE CAST(value AS TEXT)=?))"
+            parameters.extend([subject_user_id,subject_user_id])
+        if date_from:
+            filters+=' AND day>=?'
+            parameters.append(date_from)
+        if date_to:
+            filters+=' AND day<=?'
+            parameters.append(date_to)
         if self.fts:
             expression=' OR '.join('"'+term+'"' for term in terms)
             rows=self.db.execute('''SELECT messages.* FROM memory_fts JOIN messages ON messages.id=memory_fts.rowid
-                WHERE messages.bot=? AND messages.grp=? AND messages.id<? AND memory_fts MATCH ?
-                ORDER BY bm25(memory_fts),messages.id DESC LIMIT 200''',(*scope,expression)).fetchall()
+                WHERE messages.bot=? AND messages.grp=? AND messages.id<? '''+filters+''' AND memory_fts MATCH ?
+                ORDER BY bm25(memory_fts),messages.id DESC LIMIT 200''',(*scope,*parameters,expression)).fetchall()
         else:
             predicates = ' OR '.join('instr(lower(payload),?)>0' for _ in terms)
             rows = self.db.execute('''SELECT * FROM messages WHERE bot=? AND grp=? AND id<?
-                AND (''' + predicates + ''') ORDER BY id DESC LIMIT 200''',
-                (*scope, *(term.lower() for term in terms))).fetchall()
+                ''' + filters + ''' AND (''' + predicates + ''') ORDER BY id DESC LIMIT 200''',
+                (*scope, *parameters, *(term.lower() for term in terms))).fetchall()
         scores=bm25_rank(query,[searchable(json.loads(row['payload'])) for row in rows])
         matches = []
         for score,row in zip(scores,rows):

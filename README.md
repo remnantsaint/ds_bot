@@ -248,3 +248,5 @@ docker compose run --rm --no-deps -e MEMORY_ENABLED=false nonebot python -m unit
 代码、Dockerfile、Compose、入口脚本、README、测试、默认 `config.yaml` / `persona.txt`、仅含日志级别的 `.env.dev` / `.env.prod` 和密钥模板可以提交。真实 `.env`、NapCat 数据、日志和缓存不提交；运行配置和人设也不打入 NoneBot 镜像。新增私有文件需自行维护 `.gitignore`，提交前查看 `git diff --cached`，不要将密钥放进参与版本管理的普通配置中。
 
 DEBUG 日志可能包含环境变量，分享前遮盖密钥。本仓库尚未选择自有代码的许可证。NapCat / QQ 从上游镜像获取，遵循上游自己的许可证及限制，参见 [第三方说明](napcat/README.md#上游)。
+
+精简接话：可在管理后台启用“精简接话与记忆判断”，先本地过滤，再用少量近期片段判断是否回复及需要哪些记忆，减少默认上传历史摘要。配置、费用边界和验证见 [MEMORY.md](MEMORY.md)。

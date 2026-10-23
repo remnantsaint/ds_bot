@@ -131,7 +131,7 @@ class DeepSeekClient:
 
     async def chat(self, messages: list[dict], *, context: dict | None = None) -> str:
         memory = None
-        if context and context.get('bot_user_id') and context.get('current_request',{}).get('memory_record_id'):
+        if context and context.get('memory_search_allowed',True) and context.get('bot_user_id') and context.get('current_request',{}).get('memory_record_id'):
             try:
                 memory = get_memory()
                 if memory and not memory.config.enabled:

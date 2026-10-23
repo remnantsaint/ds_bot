@@ -3,6 +3,7 @@ import asyncio
 import random
 import time
 import json
+import hashlib
 from collections import defaultdict, deque
 
 from nonebot import logger, on_message
@@ -12,6 +13,7 @@ from src.deepseek_client import deepseek_client
 from src.utils import load_config, load_persona
 from src.memory import get_memory
 from src.token_budget import count_tokens
+from src.reply_planner import decide, basic_candidate, compact, select_memory
 
 
 config = load_config()
@@ -24,6 +26,8 @@ group_sequences: dict[int, int] = defaultdict(int)
 pending_requests: dict[int, int] = defaultdict(int)
 user_request_times: dict[tuple[int, int], float] = {}
 model_slots = asyncio.Semaphore(int(reply_config.get("max_concurrent_requests", 3)))
+
+planner_attempts: dict[int, tuple[float,str]] = {}
 
 group_chat = on_message(priority=10, block=False)
 
@@ -98,7 +102,7 @@ async def _resolve_mention_names(bot: Bot, event: GroupMessageEvent, names: dict
             logger.debug(f"[chat] 群 {event.group_id} @对象名称查询失败：{type(error).__name__}，保留QQ号")
 
 
-def _context(group_id: int, bot_id: int, current: dict) -> dict:
+def _context(group_id: int, bot_id: int, current: dict, plan=None) -> dict:
     # 排队期间可能又收到消息，只取当前提问之前的本群记录。
     # assistant 的 sequence 对应它回答的问题，而非回答发送的时间。
     current = dict(current)
@@ -120,9 +124,14 @@ def _context(group_id: int, bot_id: int, current: dict) -> dict:
             history = memory.store.recent(bot_id, group_id, archive_id, memory.config.recent_records)
             for item in history:
                 item["content"] = item.get("content", "")[:int(reply_config.get("max_message_chars", 4000))]
-            memory_context = memory.store.context(bot_id, group_id, current.get("content", ""), archive_id, memory.config)
+            if plan is None:
+                memory_context = memory.store.context(bot_id, group_id, current.get("content", ""), archive_id, memory.config)
+            elif plan.needs_memory:
+                memory_context = select_memory(memory.store,bot_id,group_id,archive_id,plan,memory.config)
         except Exception as error:
             logger.warning(f"[memory] 读取失败，使用短期背景：{type(error).__name__}")
+    if plan is not None:
+        history=[compact(row) for row in history[-int(reply_config.get('planner_recent_records',4)):]]
     budget = int(reply_config.get("max_context_chars", 16000))
     retained = []
     used = len(json.dumps(current, ensure_ascii=False))
@@ -152,6 +161,9 @@ def _context(group_id: int, bot_id: int, current: dict) -> dict:
         "conversation": history,
         "current_request": dict(current),
     }
+    if plan is not None:
+        result['memory_search_allowed']=plan.needs_memory
+        result['memory_plan']=plan.model_dump()
     if memory_context:
         result["memory"] = memory_context
     return result
@@ -264,7 +276,8 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
         keyword and keyword in text for keyword in reply_config.get("keywords", [])
     )
     probability = float(reply_config.get("probability", 0))
-    if not (at_trigger or keyword_trigger
+    planner_enabled=bool(reply_config.get('planner_enabled',False))
+    if not (at_trigger or keyword_trigger or planner_enabled
             or (probability > 0 and random.random() < probability)):
         return
 
@@ -280,10 +293,36 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                 return
 
         try:
+            plan=None
+            if planner_enabled:
+                forced=bool(at_trigger or keyword_trigger)
+                if not forced:
+                    if not basic_candidate(text):return
+                    fingerprint=hashlib.sha256(redact(text).encode()).hexdigest()
+                    previous=planner_attempts.get(group_id)
+                    if previous and (time.monotonic()-previous[0]<float(reply_config.get('planner_interval_seconds',30)) or previous[1]==fingerprint):return
+                    # 有界清理：失败也计入间隔，防止接口故障时连续扣费。
+                    for key,value in list(planner_attempts.items()):
+                        if time.monotonic()-value[0]>3600:planner_attempts.pop(key,None)
+                    planner_attempts[group_id]=(time.monotonic(),fingerprint)
+                history=[row for row in sessions[group_id] if row['sequence']<current['sequence']]
+                memory=_memory_safely()
+                if memory and memory.config.enabled and current.get('memory_record_id'):
+                    try:history=memory.store.recent(event.self_id,group_id,current['memory_record_id'],int(reply_config.get('planner_recent_records',4)))
+                    except Exception:pass
+                try:
+                    async with model_slots:
+                        plan,_,usage=await decide(deepseek_client,current,history,reply_config,forced)
+                    logger.info(f'[planner] 回复={plan.should_reply} 检索={plan.needs_memory} Token={usage.get("total_tokens",0)}')
+                    if not plan.should_reply:return
+                except Exception as error:
+                    logger.warning(f'[planner] 判断失败：{type(error).__name__}')
+                    if not forced:return
+                    # 明确提问不因判断失败丢失，保留旧回复与检索方式。
             await _resolve_mention_names(bot, event, names)
             current["content"] = _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))]
             current["mentioned_users"] = _mentioned_people(event, names)
-            context = _context(group_id, event.self_id, current)
+            context = _context(group_id, event.self_id, current,plan)
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 用户 {event.user_id} 开始调用 DeepSeek")
             async with model_slots:
                 messages = [{"role": "system", "content": load_persona(config)}]

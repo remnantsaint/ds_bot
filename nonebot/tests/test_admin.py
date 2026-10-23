@@ -63,9 +63,11 @@ class AdminTests(unittest.IsolatedAsyncioTestCase):
             headers = {"X-Admin-Request": "1"}
             bad = await self.client.put("/admin/api/reply", json={"max_pending_per_group": 0}, headers=headers)
             self.assertEqual(bad.status_code, 422)
-            good = await self.client.put("/admin/api/reply", json={"max_pending_per_group": "7"}, headers=headers)
+            good = await self.client.put("/admin/api/reply", json={"max_pending_per_group": "7", "planner_enabled": False, "planner_interval_seconds": 45}, headers=headers)
             self.assertEqual(good.status_code, 200)
             self.assertEqual(chat.reply_config["max_pending_per_group"], 7)
+            self.assertFalse(chat.reply_config["planner_enabled"])
+            self.assertEqual(chat.reply_config["planner_interval_seconds"],45)
             self.assertEqual(yaml.safe_load(path.read_text())["reply"]["max_pending_per_group"], 7)
 
     async def test_state_does_not_expose_keys(self):
