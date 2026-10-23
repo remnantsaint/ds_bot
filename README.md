@@ -159,13 +159,23 @@ QQ 登录数据不删除，但重建容器后可能需要重新扫码。NoneBot 
 
 ## 日常使用和开发
 
+### 修改人设无需重启
+
+直接编辑并保存 `nonebot/persona.txt`，下一次生成回答会自动读取最新内容，无需重启容器。正在生成的回答继续使用该轮开始时读取的人设。
+若文件为空、被删除或不是有效 UTF-8，该轮回答失败，不会使用空人设或旧人设；修好文件后下一次请求自动恢复。
+修改 `config.yaml`（包括更换 `persona_file` 路径）仍需重启；人设变化不会清空已有群聊历史。
+
+验证方法：备份原人设，将回答前缀临时设为“苹果测试：”，保存并在群里 @机器人；再改成“香蕉测试：”，保存后等至少 3 秒重新提问，确认前缀变化。完成后恢复原人设。
+
+本次涉及 `nonebot/src/utils.py`（独立读取人设）、`nonebot/src/plugins/chat.py`（每轮调用模型前加载）、`nonebot/tests/test_config.py` 和 `nonebot/tests/test_chat.py`（文件更新、异常恢复及聊天调用测试），并同步更新两份 README。87 项离线测试通过，群聊手动验证通过。
+
 在仓库根目录执行：
 
 ```bash
 # 查看输出，退出查看不停止服务
 docker compose logs -f --tail=100 nonebot
 
-# 代码、YAML 或人设修改后重启 NoneBot
+# 代码或 YAML 修改后重启 NoneBot（人设保存即生效）
 docker compose restart nonebot
 
 # requirements.txt 改动后，重新构建并创建 NoneBot 容器

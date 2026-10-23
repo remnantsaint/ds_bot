@@ -8,7 +8,7 @@ from nonebot import logger, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 
 from src.deepseek_client import deepseek_client
-from src.utils import load_config
+from src.utils import load_config, load_persona
 
 
 config = load_config()
@@ -233,7 +233,6 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
                 logger.debug(f"[chat] 群 {group_id} 消息 {event.message_id}：自动回复冷却中")
                 return
 
-        messages = [{"role": "system", "content": config["persona"]}]
         try:
             await _resolve_mention_names(bot, event, names)
             current["content"] = _message_content(event, names)[:int(reply_config.get("max_message_chars", 4000))]
@@ -241,6 +240,7 @@ async def _handle_group_message(bot: Bot, event: GroupMessageEvent, record):
             context = _context(group_id, event.self_id, current)
             logger.info(f"[chat] 群 {group_id} 消息 {event.message_id} 用户 {event.user_id} 开始调用 DeepSeek")
             async with model_slots:
+                messages = [{"role": "system", "content": load_persona(config)}]
                 reply_text = await deepseek_client.chat(messages, context=context)
             # 在同群锁内延迟发送，不收集或合并期间收到的其他提问。
             delay = random.uniform(

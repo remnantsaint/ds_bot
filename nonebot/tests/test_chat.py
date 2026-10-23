@@ -30,6 +30,16 @@ def event(message_id, text="问题", *, group_id=1001, user_id=2, at=True,
 
 
 class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_each_answer_uses_latest_persona_and_read_failure_skips_model(self):
+        with patch.object(chat, "load_persona", side_effect=["旧人设", "新人设", ValueError("人设为空")]), \
+             patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:
+            await chat.handle_group_message(self.bot, event(901))
+            await chat.handle_group_message(self.bot, event(902))
+            await chat.handle_group_message(self.bot, event(903))
+            self.assertEqual(model.await_count, 2)
+            self.assertEqual(model.await_args_list[0].args[0][0]["content"], "旧人设")
+            self.assertEqual(model.await_args_list[1].args[0][0]["content"], "新人设")
+
     async def test_full_queue_keeps_background_and_does_not_start_cooldown(self):
         chat.pending_requests[1001] = 5
         try:

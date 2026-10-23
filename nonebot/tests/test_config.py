@@ -69,6 +69,22 @@ class PersonaFileTests(unittest.TestCase):
         utils.load_config.cache_clear()
         self.assertEqual(utils.load_config()["persona"], "新人设")
 
+    def test_persona_reload_without_clearing_config_cache(self):
+        persona = self.root / "persona.txt"
+        persona.write_text("旧人设", encoding="utf-8")
+        self.config("persona_file: persona.txt\n")
+        cfg = utils.load_config()
+        persona.write_text("新人设", encoding="utf-8-sig")
+        self.assertEqual(utils.load_persona(cfg), "新人设")
+        persona.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "不能为空"):
+            utils.load_persona(cfg)
+        persona.unlink()
+        with self.assertRaisesRegex(ValueError, "无法读取"):
+            utils.load_persona(cfg)
+        persona.write_text("恢复人设", encoding="utf-8")
+        self.assertEqual(utils.load_persona(cfg), "恢复人设")
+
 
 if __name__ == "__main__":
     unittest.main()

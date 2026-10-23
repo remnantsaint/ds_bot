@@ -37,6 +37,14 @@ def load_config() -> dict:
     limits = ReplyLimits.model_validate(config.get("reply", {}))
     config.setdefault("reply", {}).update(limits.model_dump())
 
+    if "persona_file" in config:
+        config["persona"] = load_persona(config)
+    return config
+
+
+def load_persona(config: dict) -> str:
+    """每轮重新读取文件；失败明确报错，不发送空人设或继续使用旧人设。"""
+    path = Path(__file__).resolve().parent.parent / "config.yaml"
     # 相对路径以 config.yaml 所在目录为基准，不受终端工作目录影响。
     # 保留旧的内联 persona；配置 persona_file 时由文件内容优先覆盖。
     if "persona_file" in config:
@@ -52,6 +60,5 @@ def load_config() -> dict:
             raise ValueError(f"无法读取 UTF-8 人设文件：{persona_path}") from error
         if not persona:
             raise ValueError(f"人设文件不能为空：{persona_path}")
-        config["persona"] = persona
-
-    return config
+        return persona
+    return config["persona"]

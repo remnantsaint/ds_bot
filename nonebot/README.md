@@ -21,7 +21,7 @@ docker compose logs -f --tail=100 nonebot
 docker compose restart nonebot
 ```
 
-代码、人设和 YAML 在进程中缓存，修改后重启。修改 `.env` 后用 `docker compose up -d --force-recreate nonebot` 重新创建容器以刷新注入的变量；修改依赖后用 `docker compose up -d --build nonebot`。
+代码和 YAML 在进程中缓存，修改后重启。人设文件每次生成回答前重新读取，保存后下一轮生效，正在生成的回答不受影响。文件为空、丢失或编码错误时该轮失败，不使用空人设或旧人设，修复文件后自动恢复。修改 `.env` 后用 `docker compose up -d --force-recreate nonebot` 重新创建容器以刷新注入的变量；修改依赖后用 `docker compose up -d --build nonebot`。
 
 ## 宿主机开发入口
 
@@ -50,6 +50,10 @@ python -m pip install -r nonebot/requirements.txt
 相对人设路径以 `config.yaml` 所在目录为基准，UTF-8 和 BOM 均支持。宿主机绝对路径在容器内不一定可用。
 
 人设文件不存在、为空或编码错误时会明确报错。读取文件仅方便管理，每次模型请求仍会携带完整人设，不会因此自动减少输入 Token。
+
+人设即时更新由 `src/utils.py` 的 `load_persona()` 和 `src/plugins/chat.py` 配合完成，每轮获得模型并发名额后读取一次，同轮工具调用保持相同人设。
+`tests/test_config.py` 覆盖不清配置缓存时的文件更新、空文件、文件丢失和恢复；`tests/test_chat.py` 验证每轮使用新人设，读取失败不调用模型。
+配置中的 `persona_file` 路径和旧式内联 `persona` 仍随配置缓存，修改它们需要重启。文件内容即时生效不会清空历史。
 
 ## 回复策略与上下文
 
