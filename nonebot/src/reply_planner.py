@@ -39,7 +39,7 @@ class ReplyPlan(BaseModel):
 
 
 def compact(record,limit=240):
-    result={key:record[key] for key in ('role','user_id','mentioned_user_ids','reply_to_user_id','message_id') if key in record}
+    result={key:record[key] for key in ('role','group_id','user_id','mentioned_user_ids','reply_to_user_id','reply_to_message_id','message_id') if key in record}
     text=redact(record.get('content',''))
     if len(text)>limit:
         result.update(content=text[:limit//2]+'…[中段省略]…'+text[-limit//2:],truncated=True)

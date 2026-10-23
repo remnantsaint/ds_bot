@@ -135,3 +135,16 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
             context=answer.await_args.kwargs['context']
             self.assertNotIn('memory',context)
             self.assertFalse(context['memory_search_allowed'])
+
+    async def test_compacted_history_passes_real_answer_context_validation(self):
+        plan=ReplyPlan(should_reply=True,needs_memory=False)
+        self.chat._record_group_message(self.event(1,'上一条背景消息',at=False))
+        response=SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',message=SimpleNamespace(content='你好，我在。',tool_calls=None))])
+        with patch.object(self.chat,'decide',new_callable=AsyncMock,return_value=(plan,{},{})),patch.object(self.chat.deepseek_client,'_complete',new_callable=AsyncMock,return_value=response) as complete:
+            await self.chat.handle_group_message(self.bot,self.event(2,'你好',at=True))
+            complete.assert_awaited_once()
+            sent=complete.await_args.args[0]
+            payload=json.loads(next(row['content'] for row in sent if row['role']=='user'))
+            self.assertTrue(payload['conversation'])
+            self.assertTrue(all(row['group_id']==1001 for row in payload['conversation']))
+            self.bot.send.assert_awaited_once()
