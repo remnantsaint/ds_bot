@@ -11,7 +11,6 @@ from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from src.memory_privacy import redact
 
-maintenance=False
 recovering=set()
 _tasks={}
 _store=None
@@ -140,7 +139,7 @@ async def recover(bot,groups=None):
             except Exception as error:
                 logger.warning(f'[recovery] 补拉失败：{type(error).__name__}，不影响已持久化队列')
         from src.plugins.chat import dispatch_saved
-        while not maintenance:
+        while True:
             queued=store.pending(bot_id)
             if not queued:break
             for row in queued:

@@ -24,9 +24,9 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.temp=tempfile.TemporaryDirectory();self.path=Path(self.temp.name)/'inbox.sqlite3'
         self.store=recovery.Inbox(self.path);self.bot=SimpleNamespace(self_id='1')
         self.patcher=patch.object(recovery,'get_inbox',return_value=self.store);self.patcher.start()
-        recovery.maintenance=False;recovery.recovering.clear()
+        recovery.recovering.clear()
     async def asyncTearDown(self):
-        self.patcher.stop();recovery.maintenance=False;recovery.recovering.clear()
+        self.patcher.stop();recovery.recovering.clear()
         self.store.db.close();self.temp.cleanup()
 
     def test_message_id_is_deduplicated_per_group(self):
@@ -55,14 +55,14 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.is_tome())
         with self.assertRaises(ValueError):recovery.history_event(1,999,event_data())
 
-    async def test_maintenance_queues_then_replays_once(self):
+    async def test_reconnect_queues_then_replays_once(self):
         from src.plugins import chat
         event=recovery.history_event(1,100,event_data())
         with patch.object(chat,'process_group_message',new_callable=AsyncMock) as process:
-            recovery.maintenance=True
+            recovery.recovering.add('1')
             await chat.dispatch_saved(self.bot,event)
             process.assert_not_awaited()
-            recovery.maintenance=False
+            recovery.recovering.discard('1')
             await chat.dispatch_saved(self.bot,event,replay=True)
             await chat.dispatch_saved(self.bot,event)
             process.assert_awaited_once()

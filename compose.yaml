@@ -11,11 +11,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: "8080"
-    # 代码与配置可写挂载，以支持后台原子保存；密钥和人设不会打入镜像。
+    # 运行目录可写挂载，供 SQLite 记忆与收件箱持久化；密钥和人设不会打入镜像。
     volumes:
       - ./nonebot:/app
-    ports:
-      - "${ADMIN_BIND_IP:-127.0.0.1}:${ADMIN_PORT:-8088}:8080"
     expose:
       - "8080"
     healthcheck:

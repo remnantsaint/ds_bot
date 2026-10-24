@@ -172,17 +172,15 @@ class ToolFlowTests(unittest.IsolatedAsyncioTestCase):
 
 class GroupIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        delay_policy = patch.dict(chat.reply_config, {"conversation_window_seconds":0,"planner_enabled":False,"delay_min_seconds": 0, "delay_max_seconds": 0})
+        delay_policy = patch.dict(chat.reply_config, {"planner_enabled":False,"delay_min_seconds": 0, "delay_max_seconds": 0})
         delay_policy.start()
         self.addCleanup(delay_policy.stop)
-        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()
         chat.group_sequences.clear()
 
     async def asyncTearDown(self):
-        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()

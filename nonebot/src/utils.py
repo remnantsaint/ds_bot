@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ReplyLimits(BaseModel):
-    conversation_window_seconds: float = Field(default=120,ge=0,le=1800)
     planner_enabled: bool = False
     planner_filter_enabled: bool = True
     planner_interval_seconds: float = Field(default=30,ge=0,le=3600)
@@ -14,13 +13,7 @@ class ReplyLimits(BaseModel):
     planner_message_chars: int = Field(default=500,ge=100,le=1500)
     planner_input_tokens: int = Field(default=1000,ge=500,le=4000)
     planner_timeout_seconds: float = Field(default=12,ge=1,le=60)
-    max_pending_per_group: int = Field(default=5, ge=1, le=50)
-    max_concurrent_requests: int = Field(default=3, ge=1, le=20)
-    request_timeout_seconds: float = Field(default=180, ge=1, le=600)
-    max_message_chars: int = Field(default=4000, ge=100, le=20000)
-    max_context_chars: int = Field(default=16000, ge=100, le=100000)
     max_context_tokens: int = Field(default=6000, ge=500, le=32000)
-    user_cooldown_seconds: float = Field(default=3, ge=0, le=3600)
     max_history: int = Field(default=20, ge=0, le=200)
     probability: float = Field(default=0, ge=0, le=1)
     cooldown_seconds: float = Field(default=300, ge=0)

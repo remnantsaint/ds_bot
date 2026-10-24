@@ -63,105 +63,76 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(model.await_args_list[0].args[0][0]["content"], "旧人设")
             self.assertEqual(model.await_args_list[1].args[0][0]["content"], "新人设")
 
-    async def test_full_queue_keeps_background_and_does_not_start_cooldown(self):
-        chat.pending_requests[1001] = 5
-        try:
-            with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}):
-                await chat.handle_group_message(self.bot, event(801, "背景", at=False))
-                await chat.handle_group_message(self.bot, event(802))
-            self.assertEqual(len(chat.sessions[1001]), 2)
-            self.assertNotIn((1001, 2), chat.user_request_times)
-        finally:
-            chat.pending_requests.clear()
 
     def test_current_metadata_cannot_exceed_budget(self):
-        with patch.dict(chat.reply_config, {"max_context_chars": 100}):
+        with patch.dict(chat.reply_config, {"max_context_tokens": 100}):
             with self.assertRaises(ValueError):
                 chat._context(1001, 1, {"sequence": 1, "nickname": "x" * 200})
 
-    async def test_cooldown_does_not_block_another_user(self):
-        with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}), \
-             patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:
-            await chat.handle_group_message(self.bot, event(803, user_id=2))
-            await chat.handle_group_message(self.bot, event(804, user_id=3))
-            self.assertEqual(model.await_count, 2)
 
-    async def test_cross_group_slot_is_released_on_cancellation(self):
-        entered = asyncio.Event()
-        async def slow(*args, **kwargs):
-            entered.set()
-            await asyncio.Event().wait()
-        with patch.object(chat, "model_slots", asyncio.Semaphore(1)), \
-             patch.object(chat.deepseek_client, "chat", side_effect=slow) as model:
-            first = self.start(event(805, group_id=1001))
-            await asyncio.wait_for(entered.wait(), 1)
-            second = self.start(event(806, group_id=1002))
-            await asyncio.sleep(0.02)
-            self.assertEqual(model.await_count, 1)
-            first.cancel()
-            await asyncio.gather(first, return_exceptions=True)
-            for _ in range(20):
-                if model.await_count == 2:
-                    break
-                await asyncio.sleep(0.01)
-            self.assertEqual(model.await_count, 2)
-            second.cancel()
-            await asyncio.gather(second, return_exceptions=True)
-            self.assertFalse(chat.pending_requests)
 
-    async def test_user_cooldown_blocks_repeated_request(self):
-        chat.conversation_activity.clear()
-        chat.planner_attempts.clear()
-        chat.user_request_times.clear()
-        try:
-            with patch.dict(chat.reply_config, {"user_cooldown_seconds": 3}), \
-                 patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="答案") as model:
-                await chat.handle_group_message(self.bot, event(710))
-                await chat.handle_group_message(self.bot, event(711))
-                self.assertEqual(model.await_count, 1)
-        finally:
-            chat.conversation_activity.clear()
-        chat.planner_attempts.clear()
-        chat.user_request_times.clear()
 
     def test_context_budget_removes_oversized_history(self):
         chat.sessions[1001].append({"role": "user", "sequence": 1, "content": "x" * 1000})
-        with patch.dict(chat.reply_config, {"max_context_chars": 100}):
+        with patch.dict(chat.reply_config, {"max_context_tokens": 100}):
             context = chat._context(1001, 1, {"sequence": 2, "content": "当前问题"})
         self.assertEqual(context["conversation"], [])
 
     def test_invalid_limits_fail_validation(self):
         from src.utils import ReplyLimits
-        for values in ({"max_concurrent_requests": 0}, {"max_pending_per_group": -1},
-                       {"delay_min_seconds": 5, "delay_max_seconds": 1}):
+        for values in ({"max_history": -1}, {"delay_min_seconds": 5, "delay_max_seconds": 1}):
             with self.assertRaises(ValueError):
                 ReplyLimits.model_validate(values)
 
-    async def test_full_queue_does_not_call_model(self):
-        chat.pending_requests[1001] = 5
-        try:
-            with patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock) as model:
-                await chat.handle_group_message(self.bot, event(700))
-                model.assert_not_awaited()
-                self.assertIn("当前提问较多", str(self.bot.send.call_args.args[1]))
-        finally:
-            chat.pending_requests.clear()
 
-    async def test_total_timeout_releases_group_lock_and_counter(self):
-        async def slow(*args, **kwargs):
-            await asyncio.sleep(10)
-        with patch.dict(chat.reply_config, {"request_timeout_seconds": 0.02}), \
-             patch.object(chat.deepseek_client, "chat", side_effect=slow):
-            await chat.handle_group_message(self.bot, event(701))
-        self.assertFalse(chat.group_locks[1001].locked())
-        self.assertNotIn(1001, chat.pending_requests)
-        self.assertIn("超时", str(self.bot.send.call_args.args[1]))
+
+    async def test_more_than_five_same_user_requests_all_keep_fifo(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        ids = []
+        async def generate(messages, *, context):
+            ids.append(context['current_request']['message_id'])
+            if len(ids) == 1:
+                entered.set()
+                await release.wait()
+            return '回答'
+        with patch.object(chat.deepseek_client, 'chat', side_effect=generate):
+            self.start(event(810))
+            await asyncio.wait_for(entered.wait(), 1)
+            for message_id in range(811, 818):
+                self.start(event(message_id))
+            await asyncio.sleep(0)
+            release.set()
+            await self.finish()
+        self.assertEqual(ids, list(range(810, 818)))
+
+    async def test_four_groups_can_generate_concurrently_and_cancel_cleanly(self):
+        entered = asyncio.Event()
+        active = 0
+        async def generate(*args, **kwargs):
+            nonlocal active
+            active += 1
+            if active == 4:
+                entered.set()
+            await asyncio.Event().wait()
+        with patch.object(chat.deepseek_client, 'chat', side_effect=generate):
+            tasks = [self.start(event(820 + i, group_id=1001 + i)) for i in range(4)]
+            await asyncio.wait_for(entered.wait(), 1)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertFalse(any(lock.locked() for lock in chat.group_locks.values()))
+
+    async def test_same_user_unmentioned_message_is_not_forced_after_answer(self):
+        with patch.object(chat.deepseek_client, "chat", new_callable=AsyncMock, return_value="回答") as model:
+            await chat.handle_group_message(self.bot, event(940, "先问一句", at=True))
+            await chat.handle_group_message(self.bot, event(941, "继续聊一句", at=False))
+        model.assert_awaited_once()
+        self.assertEqual(self.bot.send.await_count, 1)
 
     async def asyncSetUp(self):
         self.reset()
         self.policy = patch.dict(chat.reply_config, {
-            "conversation_window_seconds":0,"planner_enabled": False, "probability": 0, "keywords": ["大肥鱼"],
-            "user_cooldown_seconds": 0,
+            "planner_enabled": False, "probability": 0, "keywords": ["大肥鱼"],
             "reply_on_at": True, "cooldown_seconds": 300, "max_history": 20,
             "delay_min_seconds": 0, "delay_max_seconds": 0,
         })
@@ -171,9 +142,7 @@ class GroupQueueTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def reset():
-        chat.conversation_activity.clear()
         chat.planner_attempts.clear()
-        chat.user_request_times.clear()
         chat.sessions.clear()
         chat.last_reply_time.clear()
         chat.group_locks.clear()

@@ -105,7 +105,7 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins import chat
         from test_chat import GroupQueueTests,event
         self.chat=chat;self.event=event;GroupQueueTests.reset()
-        self.policy=patch.dict(chat.reply_config,{'conversation_window_seconds':0,'planner_enabled':True,'planner_filter_enabled':True,'planner_interval_seconds':30,'cooldown_seconds':0,'user_cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
+        self.policy=patch.dict(chat.reply_config,{'planner_enabled':True,'planner_filter_enabled':True,'planner_interval_seconds':30,'cooldown_seconds':0,'delay_min_seconds':0,'delay_max_seconds':0,'keywords':[]})
         self.policy.start();self.bot=SimpleNamespace(send=AsyncMock(return_value={'message_id':900}))
     async def asyncTearDown(self):self.policy.stop()
 
@@ -154,3 +154,15 @@ class PlannerChatTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(self.chat.reply_config,{'planner_filter_enabled':False}),patch.object(self.chat,'decide',new_callable=AsyncMock,return_value=(plan,{},{})) as planner:
             await self.chat.handle_group_message(self.bot,self.event(1,'可恶啊',at=False))
             planner.assert_awaited_once()
+
+    async def test_planner_can_decline_same_user_message_after_answer(self):
+        plans = [(ReplyPlan(should_reply=False, needs_memory=False), {}, {}) for _ in range(2)]
+        with patch.dict(self.chat.reply_config, {'planner_filter_enabled':False,'planner_interval_seconds':0}), \
+             patch.object(self.chat,'decide',new_callable=AsyncMock,side_effect=plans) as planner, \
+             patch.object(self.chat.deepseek_client,'chat',new_callable=AsyncMock,return_value='回答') as answer:
+            await self.chat.handle_group_message(self.bot,self.event(940,'先问一句',at=True))
+            await self.chat.handle_group_message(self.bot,self.event(941,'继续聊一句',at=False))
+        self.assertEqual(planner.await_count,2)
+        self.assertTrue(planner.await_args_list[0].args[-1])
+        self.assertFalse(planner.await_args_list[1].args[-1])
+        answer.assert_awaited_once()

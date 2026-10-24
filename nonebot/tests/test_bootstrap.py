@@ -27,8 +27,12 @@ async def check():
         assert result.status_code == 200
         assert result.json() == {"status": "ok"}
         result = await client.get("/readyz")
-        assert result.status_code == 503
-        assert result.json() == {"qq_connected": False}
+        assert result.status_code == 404
+        for path in ("/admin", "/admin/api/state", "/admin/api/recovery"):
+            result = await client.get(path)
+            assert result.status_code == 404
+        result = await client.post("/admin/api/login", json={"password": "test-only"})
+        assert result.status_code == 404
     await deepseek_client.close()
 asyncio.run(check())
 print("BOOTSTRAP_HEALTH_OK")
