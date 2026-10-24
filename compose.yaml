@@ -5,15 +5,17 @@ services:
       context: ./nonebot
     init: true
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 210s
     env_file:
       - ./nonebot/.env
     environment:
       HOST: 0.0.0.0
       PORT: "8080"
-    # 服务代码与配置只读挂载，方便直接开发；密钥和人设不会打入镜像。
+    # 代码与配置可写挂载，以支持后台原子保存；密钥和人设不会打入镜像。
     volumes:
-      - ./nonebot:/app:ro
+      - ./nonebot:/app
+    ports:
+      - "${ADMIN_BIND_IP:-127.0.0.1}:${ADMIN_PORT:-8088}:8080"
     expose:
       - "8080"
     healthcheck:
